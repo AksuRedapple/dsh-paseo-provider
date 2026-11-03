@@ -80,7 +80,17 @@ export function createProvider() {
 
         /** 只做接收与分发；结果全部以事件返回。 */
         async send(input: any) {
-          console.error('[dsh] INPUT', JSON.stringify(input).slice(0,160));
+          // 不打印 prompt 正文（隐私）；只记形状
+          const logInput = input?.type === 'session.prompt'
+            ? {
+                type: 'session.prompt',
+                sessionId: input.sessionId,
+                clientMessageId: input.prompt?.clientMessageId,
+                blocks: Array.isArray(input.prompt?.input?.content) ? input.prompt.input.content.length : undefined,
+                delivery: input.prompt?.delivery,
+              }
+            : input;
+          console.error('[dsh] INPUT', JSON.stringify(logInput).slice(0,160));
           try {
             switch (input?.type) {
               case 'catalog': {
@@ -200,7 +210,7 @@ export function createProvider() {
                 const { blocks, text } = extractContent(p);
                 const dshId = openSessions.get(input.sessionId) || input.sessionId;
                 const clientMessageId = p.clientMessageId ?? '';
-                console.error('[dsh] prompt RAW', JSON.stringify(input.prompt).slice(0,300)); console.error('[dsh] prompt →', dshId, JSON.stringify(text).slice(0,80));
+                console.error('[dsh] prompt', dshId, 'chars', text.length, 'blocks', blocks.length);
                 if (!blocks.length) {
                   emit({
                     type: 'session.prompt_result',
@@ -250,9 +260,10 @@ export function createProvider() {
                   break;
                 }
                 // DSH 里可能已经有别的客户端在跑（例如桌面版/另一个 Paseo 连接）。
-                // 这种会话 queue 进去不会产生 turn/start，Paseo 60s 后会报 run did not start，
-                // 不如当场失败并说清楚。
-                if (await sessionRunning(dshId).catch(() => false)) {
+                // 默认 steer 插进当前轮次；DSH_RUNNING_MODE=fail 可改回快速失败。
+                const externalRunning = await sessionRunning(dshId).catch(() => false);
+                const runningMode = (process.env.DSH_RUNNING_MODE || 'steer').toLowerCase();
+                if (externalRunning && runningMode === 'fail') {
                   emit({
                     type: 'session.prompt_result',
                     sessionId: input.sessionId,
@@ -267,22 +278,54 @@ export function createProvider() {
                   });
                   break;
                 }
+                const steerExternal = externalRunning;
+                const turnId = steerExternal ? `dsh-steer-${Date.now()}` : undefined;
+                if (steerExternal && turnId) {
+                  emit({ type: 'session.turn', sessionId: input.sessionId, turnId, state: 'started' });
+                  emit({
+                    type: 'session.notice',
+                    sessionId: input.sessionId,
+                    notice: {
+                      id: `steer-${Date.now()}`,
+                      severity: 'info',
+                      title: 'DSH',
+                      description: 'DSH 会话正在运行，已将消息插入当前轮次（steer）',
+                    },
+                  });
+                  activeTurnIds.set(input.sessionId, turnId);
+                }
                 // 持久 follow：snapshot 定基线 → 发 prompt → 消费 event/assistant-stream
                 // → turn/end 收工 → 最后才发 prompt_result。
                 // 不 await：让 interrupt/close 能在本轮运行期间被处理。
                 const ctl = new AbortController();
                 activeTurns.set(input.sessionId, ctl);
+                let turnClosed = false;
                 void runTurn(input.sessionId, dshId, text, emit, {
                   signal: ctl.signal,
                   content: blocks,
+                  mode: steerExternal ? 'steer' : 'queue',
+                  ...(turnId ? { turnIdOverride: turnId, suppressTurnStart: true } : {}),
                   // 纯图片消息没有可匹配的用户文本，跳过 echo 等待
                   startPhase: text ? 'waitEcho' : 'running',
-                  onTurn: (turnId, state) => {
-                    if (state === 'started') activeTurnIds.set(input.sessionId, turnId);
-                    else if (activeTurnIds.get(input.sessionId) === turnId) activeTurnIds.delete(input.sessionId);
+                  onTurn: (id, state) => {
+                    if (state === 'started') {
+                      activeTurnIds.set(input.sessionId, id);
+                    } else {
+                      turnClosed = true;
+                      if (activeTurnIds.get(input.sessionId) === id) activeTurnIds.delete(input.sessionId);
+                    }
                   },
                 })
                   .then(async ({ reason }) => {
+                    if (steerExternal && turnId && !turnClosed) {
+                      turnClosed = true;
+                      emit({
+                        type: 'session.turn',
+                        sessionId: input.sessionId,
+                        turnId,
+                        state: reason === 'canceled' ? 'canceled' : 'failed',
+                      });
+                    }
                     // 一轮结束后 projections 已更新：把上下文占用补进 usage（Paseo 用它画占用环）
                     const ctx = await sessionContextUsage(dshId).catch(() => null);
                     if (ctx) {
@@ -298,12 +341,24 @@ export function createProvider() {
                         : { type: 'failed', error: { message: `turn ${reason}`, code: 'dsh/turn' } },
                     });
                   })
-                  .catch((e) => emit({
-                    type: 'session.prompt_result',
-                    sessionId: input.sessionId,
-                    clientMessageId,
-                    result: { type: 'failed', error: { message: errorMessage(e), code: 'dsh/error' } },
-                  }))
+                  .catch((e) => {
+                    if (steerExternal && turnId && !turnClosed) {
+                      turnClosed = true;
+                      emit({
+                        type: 'session.turn',
+                        sessionId: input.sessionId,
+                        turnId,
+                        state: 'failed',
+                        error: { message: errorMessage(e) },
+                      });
+                    }
+                    emit({
+                      type: 'session.prompt_result',
+                      sessionId: input.sessionId,
+                      clientMessageId,
+                      result: { type: 'failed', error: { message: errorMessage(e), code: 'dsh/error' } },
+                    });
+                  })
                   .finally(() => {
                     if (activeTurns.get(input.sessionId) === ctl) activeTurns.delete(input.sessionId);
                     activeTurnIds.delete(input.sessionId);
@@ -655,7 +710,10 @@ export async function runTurn(
     toolTimeoutMs?: number;
     signal?: AbortSignal;
     content?: DshPromptBlock[];
+    mode?: 'queue' | 'steer';
     startPhase?: 'waitEcho' | 'running';
+    turnIdOverride?: string;
+    suppressTurnStart?: boolean;
     onTurn?: (turnId: string, state: string) => void;
   } = {},
 ): Promise<{ reason: string }> {
@@ -783,9 +841,11 @@ export async function runTurn(
           });
         }
       } else if (a.type === 'turn') {
-        const turnId = `dsh-turn-${a.turn ?? '?'}`;
+        const turnId = deps.turnIdOverride || `dsh-turn-${a.turn ?? '?'}`;
         deps.onTurn?.(turnId, a.state);
-        emit({ type: 'session.turn', sessionId: paseoId, turnId, state: a.state });
+        if (!(a.state === 'started' && deps.suppressTurnStart)) {
+          emit({ type: 'session.turn', sessionId: paseoId, turnId, state: a.state });
+        }
       } else if (a.type === 'notice') {
         notice(a.message, a.level);
       } else if (a.type === 'done') {
@@ -810,7 +870,7 @@ export async function runTurn(
       startPhase: deps.startPhase ?? 'waitEcho',
     });
     handle(state.onSnapshot(snap));
-    await (deps.prompt || promptSession)(dshId, deps.content ?? text);
+    await (deps.prompt || promptSession)(dshId, deps.content ?? text, deps.mode ?? 'queue');
 
     timer = setInterval(() => {
       const at = now();

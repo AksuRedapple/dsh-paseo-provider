@@ -88,6 +88,7 @@ dsh-provider  ┌───────────────┐      ┌──
 | `DSH_COOKIE` | 自动交换 | 显式 `dsh-auth-*` cookie；跳过 token 交换 |
 | `DSH_DEFAULT_CWD` | `$HOME` | 新建会话的默认 cwd |
 | `DSH_TITLE_CONCURRENCY` | `8` | 列表补标题的并发上限 |
+| `DSH_RUNNING_MODE` | `steer` | 目标会话正在运行时的行为：`steer`（插入当前轮次）｜`fail`（返回 `dsh/busy`） |
 
 ## 测试
 
@@ -105,7 +106,7 @@ node --test tools/tests/provider_stream.test.mjs
 - DSH 是私有协议；rc 升级可能改变日志/字段，未知事件会告警而不是猜测。
 - 快照窗口由 DSH 控制，超长历史会截断（有 notice，不分页）。
 - 权限审批、MCP、斜杠命令、revert/archive 未做（DSH desktop preset 自动执行 / 无对应端点）。
-- 目标 DSH 会话正在运行（桌面版/其他客户端）时，发送消息会立即失败并提示 `dsh/busy`，不会排队等待。
+- 目标 DSH 会话正在运行（桌面版/其他客户端）时，默认把消息 **steer 插入当前轮次**；设置 `DSH_RUNNING_MODE=fail` 可改为快速失败（`dsh/busy`），不排队等待。
 
 ## License
 

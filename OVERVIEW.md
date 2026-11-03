@@ -24,7 +24,7 @@ DSH's desktop app exposes a local HTTP RPC endpoint and a WebSocket mux. The plu
 
 ## Data access
 
-The plugin reads the local DSH web log to obtain a launch token, then exchanges the token for an auth cookie on `127.0.0.1` and uses that cookie for local HTTP and WebSocket requests. The cookie is kept in memory and is not logged or sent anywhere else. The plugin connects only to the local DSH endpoint; it sends prompts, images, model selections and cancellation requests to DSH. Prompts and tool results are stored and forwarded to model providers by DSH itself. The plugin adds no external services, telemetry, or analytics.
+The plugin reads the local DSH web log to obtain a launch token, then exchanges the token for an auth cookie on `127.0.0.1` and uses that cookie for local HTTP and WebSocket requests. The cookie is kept in memory and is not logged or sent anywhere else. The plugin connects only to the local DSH endpoint; it sends prompts, images, model selections and cancellation requests to DSH. Prompts and tool results are stored and forwarded to model providers by DSH itself. The plugin adds no external services, telemetry, or analytics. Plugin logs contain session ids and event types; prompt text and images are not logged. When `DSH_BASE` or `DSH_MUX` is set, prompts and images are sent to those configured endpoints instead of local discovery.
 
 ## Permissions
 
@@ -37,4 +37,4 @@ The plugin runs unsandboxed with the permissions of the user running the Paseo d
 - DSH is a private protocol; unknown events are reported as notices, but a DSH release can still change behavior.
 - Very long histories are truncated by DSH (reported as a notice; no pagination).
 - Permission prompts, MCP servers, slash commands, session revert and archive are not supported.
-- Prompting a DSH session that is already running in another client fails fast with a visible error instead of queueing.
+- Prompting a DSH session that is already running in another client steers into the current turn by default; set `DSH_RUNNING_MODE=fail` to reject with a visible busy error instead.

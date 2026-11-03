@@ -94,7 +94,8 @@ test('lifecycle: 外部运行的 DSH 会话 → 打开提示 + prompt 快速失�
   });
   process.env.DSH_BASE = `http://127.0.0.1:${mock.port}`;
   process.env.DSH_MUX = `ws://127.0.0.1:${mock.port}`;
-  t.after(() => mock.close());
+  process.env.DSH_RUNNING_MODE = 'fail';
+  t.after(() => { mock.close(); delete process.env.DSH_RUNNING_MODE; });
 
   const { createProvider } = await import('../../server/provider.ts');
   const conn = await createProvider().connect({});
@@ -114,4 +115,47 @@ test('lifecycle: 外部运行的 DSH 会话 → 打开提示 + prompt 快速失�
   assert.equal(failed.result.type, 'failed');
   assert.equal(failed.result.error.code, 'dsh/busy');
   assert.ok(!mock.calls.some((c) => c.method === 'session/prompt'), 'must not queue a prompt');
+});
+
+test('lifecycle: 外部运行的会话默认 steer 插入当前轮次', async (t) => {
+  delete process.env.DSH_RUNNING_MODE;
+  const mock = await startMockDsh((ws, streamId) => {
+    const send = (value) => ws.send(JSON.stringify({ type: 'item', streamId, value }));
+    const now = Date.now();
+    // 模拟外部已运行中的轮次：没有 turn/start，只有 steer 的用户消息、assistant 和 turn/end
+    send({ type: 'event', event: { type: 'user/message', seq: 1, time: now,
+      data: { content: [{ type: 'text', text: 'hello' }], source: { kind: 'user' } } } });
+    send({ type: 'event', event: { type: 'assistant/message', seq: 2, time: now,
+      data: { turn: 1, step: 1, message: { content: [{ type: 'text', text: 'steered-answer' }] } } } });
+    send({ type: 'event', event: { type: 'turn/end', seq: 3, time: now,
+      data: { turn: 1, reason: { kind: 'completed' } } } });
+  }, {
+    sessions: [{ sessionId: 'mock-session', running: true }],
+  });
+  process.env.DSH_BASE = `http://127.0.0.1:${mock.port}`;
+  process.env.DSH_MUX = `ws://127.0.0.1:${mock.port}`;
+  t.after(() => mock.close());
+
+  const { createProvider } = await import('../../server/provider.ts');
+  const conn = await createProvider().connect({});
+  const events = [];
+  conn.onEvent((e) => events.push(e));
+
+  await conn.send({
+    type: 'session.open', requestId: 'r1', sessionId: 'p1',
+    config: { cwd: '/tmp' }, history: 'skip',
+  });
+  await waitFor(events, (e) => e.type === 'session.ready');
+
+  await prompt(conn, 'p1');
+  const result = await waitFor(events, (e) => e.type === 'session.prompt_result');
+  assert.equal(result.result.type, 'completed');
+  assert.equal(mock.calls.find((c) => c.method === 'session/prompt')?.args.mode, 'steer');
+
+  const started = events.find((e) => e.type === 'session.turn' && e.state === 'started');
+  assert.ok(started?.turnId?.startsWith('dsh-steer-'), 'synthetic steer turn expected');
+  assert.ok(events.some((e) => e.type === 'session.notice' && /插入当前轮次/.test(e.notice?.description || '')));
+  const text = events.filter((e) => e.type === 'timeline.item' && e.item.type === 'assistant_message')
+    .map((e) => e.item.text).join('');
+  assert.equal(text, 'steered-answer');
 });

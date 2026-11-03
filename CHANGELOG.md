@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.0.2 — 2026-11-03
+
+- Prompting a DSH session that is already running elsewhere now steers into the current turn by default. Set `DSH_RUNNING_MODE=fail` to reject with `dsh/busy` instead.
+- Debug logs no longer include prompt text or images; the overview documents endpoint overrides and the logging boundary.
+- 38 tests / 8 files.
+
 ## 2.0.1 — 2026-11-03
 
 - Prompting a DSH session that is already running in the desktop app (or another client) now fails fast with `dsh/busy` instead of queueing until Paseo's 60s start timeout.
