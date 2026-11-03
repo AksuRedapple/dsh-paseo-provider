@@ -15,7 +15,12 @@ registerHooks({
 
 const SESSION_ITEM = {
   sessionId: 'mock-session',
-  projections: { values: { modelSelection: { next: { provider: 'prov-a', model: 'mock-flash' } } } },
+  projections: {
+    values: {
+      modelSelection: { next: { provider: 'prov-a', model: 'mock-flash' } },
+      contextPressure: { pressureTokens: 1234, contextWindow: 1_000_000 },
+    },
+  },
 };
 
 test('provider-models: catalog 按 provider 分组，session.open 同步当前模型，configure 切模型', async (t) => {
@@ -46,6 +51,9 @@ test('provider-models: catalog 按 provider 分组，session.open 同步当前�
   const cfg0 = events.find((e) => e.type === 'session.config')?.config;
   assert.equal(cfg0?.model, 'prov-a::mock-flash');
   assert.equal(cfg0?.thinkingOption, 'off');
+  const usage0 = events.find((e) => e.type === 'session.usage')?.usage;
+  assert.equal(usage0?.contextWindowUsedTokens, 1234);
+  assert.equal(usage0?.contextWindowMaxTokens, 1_000_000);
 
   // configure → DSH session/selectModel（模型 + reasoning effort 一次带上）
   await conn.send({

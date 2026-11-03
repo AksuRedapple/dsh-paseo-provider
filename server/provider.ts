@@ -9,7 +9,7 @@
  */
 import { listSessions, promptSession, createSession, interruptSession, probeDsh, modelCatalog, selectModel } from './dsh-client';
 import type { DshModelCatalog, DshPromptBlock } from './dsh-client';
-import { fetchSessionRecords, followSession, type DshEvent } from './dsh-ws';
+import { fetchSessionRecords, fetchSessionSnapshot, followSession, type DshEvent } from './dsh-ws';
 import { getDshEndpoint } from './dsh-endpoint.mjs';
 import { createTurnState } from './turn-state.mjs';
 import {
@@ -142,9 +142,25 @@ export function createProvider() {
                 if (cat) {
                   emit({ type: 'session.config', sessionId: sid, config: toProviderConfig(cat, model) });
                 }
+                const ctx = await sessionContextUsage(dshId).catch(() => null);
+                if (ctx) emit({ type: 'session.usage', sessionId: sid, usage: ctx });
 
                 if (input.history === 'replay' && input.persistence?.data?.sessionId) {
-                  const events = await fetchSessionRecords(dshId);
+                  const snap = await fetchSessionSnapshot(dshId);
+                  if (snap.hasMore) {
+                    console.error('[dsh] replay snapshot truncated at cursor', snap.cursor);
+                    emit({
+                      type: 'session.notice',
+                      sessionId: sid,
+                      notice: {
+                        id: `replay-trunc-${Date.now()}`,
+                        severity: 'warning',
+                        title: 'DSH',
+                        description: 'DSH 快照被截断（hasMore=true），历史不完整；实时流不受影响',
+                      },
+                    });
+                  }
+                  const events = snap.events;
                   console.error('[dsh] replay events', events.length);
                   let n = 0;
                   const pending = new Map<string, any>();
@@ -236,14 +252,22 @@ export function createProvider() {
                     else if (activeTurnIds.get(input.sessionId) === turnId) activeTurnIds.delete(input.sessionId);
                   },
                 })
-                  .then(({ reason }) => emit({
-                    type: 'session.prompt_result',
-                    sessionId: input.sessionId,
-                    clientMessageId,
-                    result: reason === 'completed'
-                      ? { type: 'completed' }
-                      : { type: 'failed', error: { message: `turn ${reason}`, code: 'dsh/turn' } },
-                  }))
+                  .then(async ({ reason }) => {
+                    // 一轮结束后 projections 已更新：把上下文占用补进 usage（Paseo 用它画占用环）
+                    const ctx = await sessionContextUsage(dshId).catch(() => null);
+                    if (ctx) {
+                      console.error('[dsh] context usage', ctx.contextWindowUsedTokens ?? '?', '/', ctx.contextWindowMaxTokens ?? '?');
+                      emit({ type: 'session.usage', sessionId: input.sessionId, usage: ctx });
+                    }
+                    emit({
+                      type: 'session.prompt_result',
+                      sessionId: input.sessionId,
+                      clientMessageId,
+                      result: reason === 'completed'
+                        ? { type: 'completed' }
+                        : { type: 'failed', error: { message: `turn ${reason}`, code: 'dsh/turn' } },
+                    });
+                  })
                   .catch((e) => emit({
                     type: 'session.prompt_result',
                     sessionId: input.sessionId,
@@ -411,6 +435,29 @@ async function resolveSessionModel(dshId: string): Promise<ModelRef | null> {
     : null;
 }
 
+/** 从 session/list 的 projections.contextPressure 读上下文窗口与已用 token。 */
+function contextUsageOf(item: any) {
+  const p = item?.projections?.values?.contextPressure;
+  const used = typeof p?.pressureTokens === 'number' && Number.isFinite(p.pressureTokens) ? p.pressureTokens : undefined;
+  const max = typeof p?.contextWindow === 'number' && Number.isFinite(p.contextWindow) && p.contextWindow > 0
+    ? p.contextWindow
+    : undefined;
+  if (used == null && max == null) return null;
+  return {
+    ...(used != null ? { contextWindowUsedTokens: used } : {}),
+    ...(max != null ? { contextWindowMaxTokens: max } : {}),
+  };
+}
+
+async function sessionContextUsage(dshId: string) {
+  try {
+    const items = await listSessions();
+    return contextUsageOf(items.find((s) => s.sessionId === dshId));
+  } catch {
+    return null;
+  }
+}
+
 /** DSH usage chunk → Paseo ProviderUsage。
  *  实测（2026-11-03）真实字段是 camelCase：inputTokens / cacheReadTokens / outputTokens。
  *  早先只认 snake_case，真机上 usage 会全部丢成 undefined；两套都收。 */
@@ -573,10 +620,17 @@ export async function runTurn(
   } = {},
 ): Promise<{ reason: string }> {
   const ep = await getDshEndpoint().catch(() => null);
+  let connect: ((url: string) => any) | undefined;
+  if (ep?.cookie) {
+    const { WebSocket: WsWebSocket } = await import('ws');
+    const cookie = ep.cookie;
+    connect = (url) => new WsWebSocket(url, { headers: { cookie } });
+  }
   const follow = (deps.follow || followSession)(dshId, {
     assistantStream: true,
     readyTimeoutMs: 15_000,
-    ...(ep ? { url: ep.mux, ...(ep.cookie ? { headers: { cookie: ep.cookie } } : {}) } : {}),
+    ...(ep ? { url: ep.mux } : {}),
+    ...(connect ? { connect, headers: { cookie: ep?.cookie as string } } : {}),
   });
   const now = deps.now || Date.now;
   const pending = new Map<string, any>();

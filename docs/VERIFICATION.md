@@ -10,7 +10,7 @@
 ./check.sh
 # ▸ tests 共 13 个测试（fast）
 # ▸ 结果: pass=11 fail=0
-# node --test: 45 / pass 45 / fail 0
+# node --test: 47 / pass 47 / fail 0
 # 干净目录 npm ci → check.sh 通过（Node 26 / Node 24）；Node 22.23.4 直跑通过
 ```
 
@@ -156,6 +156,16 @@ ACP 路径（`acp-server.mjs` + stdio JSON-RPC）：
 | WS 实跑 | `paseo agent run --provider dsh` 完成；HTTP 与 mux 都走 8780 + cookie |
 | 单测 | `endpoint-6`：cookie 鉴权的 mock（HTTP 401 + WS 1008）端到端通过 |
 | 失效恢复 | 401/403 会清缓存并重新读日志换 cookie 重试一次 |
+
+### WS 日常使用打磨（真机）
+
+| 场景 | 结果 |
+|---|---|
+| usage 上下文 | 一轮后日志 `[dsh] context usage 26678 / 1048576`；`session.usage` 同时带 `contextWindowUsedTokens` / `contextWindowMaxTokens` |
+| 长会话回放 | 482 events → 105 条时间线（user 18 / reasoning 42 / tool 41 / assistant 4），1.18s；`hasMore=true` → notice「DSH 快照被截断」 |
+| 断线重连 | 客户端主动断开第 1 条连接 → `connects=2, snapshots=2, errors=1, gaps=0` |
+| cookie 轮换 | mock 换 cookie 后下一次 RPC 401 → 清缓存 → 重新换 cookie → 成功（`endpoint-7`） |
+| seq 重置 | 无真实样本；由 `provider_stream` 的 reset 单测覆盖 |
 
 ## 7. 未覆盖 / 局限
 

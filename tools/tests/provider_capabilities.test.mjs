@@ -123,3 +123,52 @@ test('capabilities: steer 插入运行中的轮次并回同一个 turnId', async
   const final = await waitFor(events, (e) => e.type === 'session.prompt_result' && e.clientMessageId === 'c1');
   assert.equal(final.result.type, 'completed');
 });
+
+test('capabilities: history replay 重建 user/assistant/tool/todo', async (t) => {
+  const now = Date.now();
+  const records = [
+    { event: { type: 'user/message', seq: 1, time: now,
+      data: { content: [{ type: 'text', text: 'first question' }], source: { kind: 'user' } } } },
+    { event: { type: 'assistant/message', seq: 2, time: now,
+      data: { turn: 1, step: 1, message: { content: [{ type: 'text', text: 'answer' }] } } } },
+    { event: { type: 'tool/call', seq: 3, time: now,
+      data: { callId: 'c1', name: 'bash', arguments: '{}' } } },
+    { event: { type: 'tool/result', seq: 4, time: now,
+      data: { toolCallId: 'c1', message: { content: [{ type: 'text', text: 'ok' }] } } } },
+    { event: { type: 'todo/write', seq: 5, time: now,
+      data: { todos: [
+        { content: 'one', status: 'completed' },
+        { content: 'two', status: 'in_progress' },
+      ] } } },
+  ];
+  const mock = await startMockDsh(() => {}, { records, hasMore: true });
+  process.env.DSH_BASE = `http://127.0.0.1:${mock.port}`;
+  process.env.DSH_MUX = `ws://127.0.0.1:${mock.port}`;
+  t.after(() => mock.close());
+
+  const { createProvider } = await import('../../server/provider.ts');
+  const conn = await createProvider().connect({});
+  const events = [];
+  conn.onEvent((e) => events.push(e));
+
+  await conn.send({
+    type: 'session.open', requestId: 'r1', sessionId: 'p1',
+    config: { cwd: '/tmp' },
+    persistence: { version: 1, data: { sessionId: 'mock-session' } },
+    history: 'replay',
+  });
+  await waitFor(events, (e) => e.type === 'session.ready');
+
+  const items = events.filter((e) => e.type === 'timeline.item').map((e) => e.item);
+  assert.ok(items.some((i) => i.type === 'user_message' && i.text === 'first question'));
+  assert.ok(items.some((i) => i.type === 'assistant_message' && i.text === 'answer'));
+  const tool = items.find((i) => i.type === 'tool_call');
+  assert.equal(tool?.name, 'bash');
+  assert.equal(tool?.status, 'completed');
+  const todo = items.find((i) => i.type === 'todo');
+  assert.equal(todo?.items?.length, 2);
+  assert.equal(todo?.items?.[0]?.completed, true);
+
+  const truncated = events.find((e) => e.type === 'session.notice' && /截断/.test(e.notice?.description || ''));
+  assert.ok(truncated, 'replay truncation notice expected');
+});

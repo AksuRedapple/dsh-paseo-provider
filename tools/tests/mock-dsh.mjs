@@ -32,21 +32,22 @@ export async function startMockDsh(onPrompt, opts = {}) {
   const sessions = opts.sessions || [];
   const records = opts.records || [];
   const calls = [];
+  let requiredCookie = opts.requireCookie;
   const server = http.createServer((req, res) => {
     let body = '';
     req.on('data', (d) => { body += d; });
     req.on('end', () => {
       // 可选：模拟 DSH 的 launch token → cookie 交换与鉴权
-      if (opts.requireCookie) {
+      if (requiredCookie) {
         const url = String(req.url || '');
         if (url.startsWith('/?token=')) {
-          res.setHeader('set-cookie', `${opts.requireCookie}; Path=/`);
+          res.setHeader('set-cookie', `${requiredCookie}; Path=/`);
           res.statusCode = 302;
           res.setHeader('location', '/');
           res.end();
           return;
         }
-        if (req.headers.cookie !== opts.requireCookie) {
+        if (req.headers.cookie !== requiredCookie) {
           res.statusCode = 401;
           res.end('unauthorized');
           return;
@@ -81,7 +82,7 @@ export async function startMockDsh(onPrompt, opts = {}) {
   });
   const wss = new WebSocketServer({ server });
   wss.on('connection', (ws, req) => {
-    if (opts.requireCookie && req.headers.cookie !== opts.requireCookie) {
+    if (requiredCookie && req.headers.cookie !== requiredCookie) {
       ws.close(1008, 'unauthorized');
       return;
     }
@@ -93,7 +94,7 @@ export async function startMockDsh(onPrompt, opts = {}) {
       streamId = m.streamId;
       ws.send(JSON.stringify({
         type: 'item', streamId,
-        value: { type: 'snapshot', cursor: opts.cursor ?? 0, hasMore: false, records },
+        value: { type: 'snapshot', cursor: opts.cursor ?? 0, hasMore: opts.hasMore === true, records },
       }));
     });
   });
@@ -101,6 +102,7 @@ export async function startMockDsh(onPrompt, opts = {}) {
   return {
     port: server.address().port,
     calls,
+    setCookie(value) { requiredCookie = value; },
     close() {
       try { wss.close(); } catch {}
       try { server.close(); } catch {}

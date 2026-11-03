@@ -6,16 +6,7 @@
  *   · snapshot.cursor < lastSeq 判 seq 重置，重建基线且不回放；
  *   · hasMore 发 truncated；未知帧发 unknown；重连缺口发 gap。
  */
-import { createRequire } from 'node:module';
 import { getDshEndpoint } from './dsh-endpoint.mjs';
-
-// ws 只在需要带 cookie 头时懒加载：无 headers 的调用继续走全局 WebSocket
-const require = createRequire(import.meta.url);
-let WsWebSocket = null;
-const wsClass = () => {
-  if (!WsWebSocket) WsWebSocket = require('ws').WebSocket;
-  return WsWebSocket;
-};
 
 // 运行期读取：测试会给每个用例换 mock 端口
 const muxUrl = () => process.env.DSH_MUX || 'ws://127.0.0.1:8781/api/remote.mux';
@@ -32,7 +23,10 @@ function parseFrame(data) {
 export function followSession(sessionId, opts = {}) {
   const url = opts.url || muxUrl();
   const connect = opts.connect
-    || ((u) => (opts.headers ? new (wsClass())(u, { headers: opts.headers }) : new WebSocket(u)));
+    || ((u) => {
+      if (opts.headers) throw new Error('followSession: headers require a connect function (ws)');
+      return new WebSocket(u);
+    });
   const backoff = opts.backoffMs || DEFAULT_BACKOFF;
   const reconnectEnabled = opts.reconnect !== false;
 
@@ -246,7 +240,12 @@ export async function readSnapshot(sessionId, timeoutMs = 15000, opts = {}) {
       if (ep.cookie) headers = { cookie: ep.cookie };
     } catch {}
   }
-  const follow = followSession(sessionId, { reconnect: false, readyTimeoutMs: timeoutMs, url, headers });
+  let connect = opts.connect;
+  if (!connect && headers?.cookie) {
+    const { WebSocket: WsWebSocket } = await import('ws');
+    connect = (u) => new WsWebSocket(u, { headers });
+  }
+  const follow = followSession(sessionId, { reconnect: false, readyTimeoutMs: timeoutMs, url, headers, connect });
   try {
     return await follow.ready;
   } catch {

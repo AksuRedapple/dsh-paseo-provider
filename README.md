@@ -23,7 +23,7 @@
 - **基础交互对齐官方 provider**：支持图片 prompt（转成 DSH 的 `mediaType`）、运行中 steer 插话（DSH `mode:'steer'`）、`todo/write` → 时间线任务列表（ACP 为 `plan`）。
 - **上下文不污染时间线**：DSH 注入的 system-reminder / ssot-context / 时间戳等 user/message 按 `source.kind` 过滤。
 - **失败面显式化**：seq 重置、快照截断、未知事件、工具无结果、连接中断都会变成可见的 notice/日志。
-- **测试**：45 条测试（13 个测试文件），见 `docs/VERIFICATION.md`。
+- **测试**：47 条测试（13 个测试文件），见 `docs/VERIFICATION.md`。
 
 ## Provider 契约覆盖
 
@@ -39,7 +39,7 @@
 | session.permission | ⚠️ 接收但忽略（DSH preset 自动执行） |
 | prompt.command（斜杠命令） | ❌ DSH 没有命令注册 RPC |
 | session.revert / archive / unarchive | ❌ 显式 `request.failed(dsh/unsupported)` |
-| timeline.item / session.turn / session.notice / prompt_result / session.usage | ✅ |
+| timeline.item / session.turn / session.notice / prompt_result / session.usage（tokens + 上下文窗口占用） | ✅ |
 
 ### `dsh-acp`
 

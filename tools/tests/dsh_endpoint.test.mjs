@@ -67,6 +67,41 @@ test('endpoint-5: 日志 token 换 cookie，端口改写为 127.0.0.1', async ()
   assert.ok(calls[0].includes('/?token=tok123'));
 });
 
+test('endpoint-7: cookie 变化后 401 → 重新换 cookie 重试', async (t) => {
+  const mock = await startMockDsh(() => {}, { requireCookie: 'dsh-auth-a=1' });
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-endpoint-rotate-'));
+  const logPath = join(dir, 'dsh-web.log');
+  writeFileSync(logPath, `dsh web: http://192.168.1.9:${mock.port}?token=tok-rotate\n`);
+  process.env.DSH_WEB_LOG = logPath;
+  delete process.env.DSH_BASE;
+  delete process.env.DSH_MUX;
+  delete process.env.DSH_COOKIE;
+  clearDshEndpointCache();
+  t.after(() => mock.close());
+
+  const { createProvider } = await import('../../server/provider.ts');
+  const conn = await createProvider().connect({});
+  const events = [];
+  conn.onEvent((e) => events.push(e));
+  const waitFor = async (pred, ms = 6000) => {
+    const start = Date.now();
+    while (Date.now() - start < ms) {
+      const hit = events.find(pred);
+      if (hit) return hit;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    throw new Error('timeout');
+  };
+
+  await conn.send({ type: 'sessions', requestId: 'r1', limit: 5 });
+  await waitFor((e) => e.type === 'sessions' && e.requestId === 'r1');
+
+  mock.setCookie('dsh-auth-b=2');
+  await conn.send({ type: 'sessions', requestId: 'r2', limit: 5 });
+  const r2 = await waitFor((e) => e.type === 'sessions' && e.requestId === 'r2');
+  assert.equal(r2.sessions.length, 0);
+});
+
 test('endpoint-6: cookie 鉴权的 mock DSH 端到端（发现 → 换 cookie → HTTP+WS）', async (t) => {
   const mock = await startMockDsh((ws, streamId) => sendMockTurn(ws, streamId), {
     requireCookie: 'dsh-auth-test=1',

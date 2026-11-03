@@ -21,7 +21,7 @@ An optional second ACP provider, `dsh-acp-official`, launches the official `dsh 
 ## Capabilities
 
 - List DSH sessions, open them with history replay, and create new sessions.
-- Stream reasoning and assistant text, tool calls and results, todo lists, usage, and turn state.
+- Stream reasoning and assistant text, tool calls and results, todo lists, usage (token counts and context-window occupancy), and turn state.
 - Interrupt a running turn, close a session, and report whether a runtime can be stopped.
 - Model catalog from DSH, including model and reasoning-effort selection for existing sessions.
 - Image prompts and steering a running turn.

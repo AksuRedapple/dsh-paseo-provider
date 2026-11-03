@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.3.0 — 2026-11-03
+
+WS daily-use polish.
+
+- `session.usage` now includes `contextWindowUsedTokens` / `contextWindowMaxTokens` from DSH `projections.contextPressure` (emitted on open and after each turn).
+- History replay reports snapshot truncation (`hasMore=true`) instead of silently showing a partial timeline.
+- Fix a plugin-load failure introduced in 1.2.0: Paseo's loader does not always provide `import.meta.url`, so `ws` is now loaded with a dynamic import when a cookie is present.
+- Tests: replay/tool/todo regression, 401 cookie rotation recovery, context usage; 47 tests total.
+
 ## 1.2.0 — 2026-11-03
 
 WS endpoint discovery; no local proxy required.
