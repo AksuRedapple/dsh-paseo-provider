@@ -49,10 +49,11 @@ printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
 inspector: source state exceeds the source-frame byte limit
 ```
 
-这是 `dsh-experimental-inspector` 的问题（实测 0.2.1-rc.5 桌面 + rc.3 runtime 组合）。处理方式：
+这是 `dsh-experimental-inspector` 的问题（实测 0.2.1-rc.5 桌面；app 内 runtime 是 rc.5，profile 内 `plugin-market` 仍是 rc.3）。处理方式：
 
 - 回退桌面版到与 runtime 匹配的版本，或升级 runtime/等待上游修复；
 - 本机实测 workaround（2026-11-03）：备份 `~/.dsh/profiles/desktop/package.json`，从 `dsh.profile.bundles` 移除 `@deepseek-ai/dsh-experimental-inspector-profile`，再跑 `~/bin/dsh-start.sh`；8780 恢复、inspector 不再崩溃；
+- 用户态 runtime 缓存 `~/.dsh/dsh-runtimes/dsh-primary-runtime` 已从 app 内 rc.5 同步（备份 `*.rc3.bak-20261103-131632`）；profile 里 rc.3 的插件包仍需用 pnpm 升级或移除；
 - 回滚 rc.3 的实测结论：官方 rc.3 包签名有效，但在 macOS 27.2 上进程停于 dyld（无 host、无 8780），回滚不可行；保留 rc.5 + 移除 inspector；
 - 锁定更新（无 sudo）：把 `~/Library/Caches/@deepseek-aidsh-desktop-updater` 与 `com.deepseek.dsh.ShipIt` 设为只读，并禁用 pending；app bundle 受 macOS App Management 保护，用户级 `chflags/chmod` 会被拒；需要硬锁时用 `sudo chflags uchg "/Applications/DeepSeek Harness.app"`（或 hosts 阻断下载域）；
 - 不要通过改 provider 绕过：DSH 后端没起时 provider 只能报 unavailable。
