@@ -126,6 +126,7 @@ node --test tools/tests/provider_stream.test.mjs
 - `session.revert` / `session.archive` / `session.unarchive` 未实现，会显式返回 `request.failed(dsh/unsupported)`。
 - ACP 已支持持久流、实时 reasoning/text、tool_call/tool_call_update、模型/思考档位与 usage；权限桥接与模式切换未做。
 - DSH 投影的 `modelSelection` 只在模型切换后（或完成一轮）才有值；空白会话回落到目录默认值。
+- Paseo 注入的 MCP servers 不会转发进 DSH（两个 provider 都只接 DSH 自己的工具）；capabilities 里的 `McpServers` 是 Paseo 侧默认值，不代表已实现。
 - `session/load` 与 WS 历史一样受快照窗口限制。
 - seq 重置有检测与恢复策略，但尚无真实故障样本验证。
 - 真机验证仅在 macOS + Node 26 完成；CI 矩阵为 Node 22/24。

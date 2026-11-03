@@ -54,6 +54,10 @@ test('acp-mock: prompt path streams text + tool lifecycle', async (t) => {
   const types = updates.map((u) => u.sessionUpdate);
   assert.ok(types.includes('tool_call'), 'tool_call update expected');
   assert.ok(types.includes('tool_call_update'), 'tool_call_update expected');
+  const toolCall = updates.find((u) => u.sessionUpdate === 'tool_call');
+  assert.deepEqual(toolCall.rawInput, { command: '' }, 'tool card must carry rawInput');
+  const toolDone = updates.find((u) => u.sessionUpdate === 'tool_call_update');
+  assert.equal(toolDone.rawOutput, 'ok', 'tool card must carry rawOutput');
   const plan = updates.filter((u) => u.sessionUpdate === 'plan').at(-1);
   assert.ok(plan, 'plan update expected');
   assert.deepEqual(plan.entries.map((e) => [e.content, e.status]), [

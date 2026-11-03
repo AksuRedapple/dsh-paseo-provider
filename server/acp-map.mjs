@@ -28,6 +28,49 @@ const pick = (content, type) =>
     .filter((c) => c && c.type === type && typeof c.text === 'string')
     .map((c) => c.text).join('');
 
+/** DSH 工具名 + arguments → ACP kind / rawInput（字段名按 Paseo 的展示约定）。 */
+function acpToolInput(name, raw) {
+  let args = {};
+  try {
+    args = typeof raw === 'string' ? JSON.parse(raw) : raw || {};
+  } catch {
+    args = { raw: String(raw ?? '') };
+  }
+  if (!args || typeof args !== 'object') args = { raw: String(args ?? '') };
+  const n = String(name || '').toLowerCase();
+  const file = args.file_path || args.path || args.filePath || '';
+  if (n.includes('bash') || n.includes('shell') || n.includes('exec')) {
+    return { kind: 'execute', input: { command: String(args.command ?? '') } };
+  }
+  if (n === 'read' || n.includes('read_file')) {
+    return {
+      kind: 'read',
+      input: {
+        filePath: String(file),
+        ...(args.offset != null ? { offset: args.offset } : {}),
+        ...(args.limit != null ? { limit: args.limit } : {}),
+      },
+    };
+  }
+  if (n === 'write' || n.includes('write_file')) {
+    return { kind: 'edit', input: { filePath: String(file), content: String(args.content ?? '') } };
+  }
+  if (n === 'edit' || n.includes('str_replace')) {
+    return {
+      kind: 'edit',
+      input: {
+        filePath: String(file),
+        oldString: String(args.old_string ?? ''),
+        newString: String(args.new_string ?? ''),
+      },
+    };
+  }
+  if (n.includes('grep') || n.includes('search') || n.includes('glob')) {
+    return { kind: 'search', input: { query: String(args.query ?? args.pattern ?? '') } };
+  }
+  return { kind: 'other', input: args };
+}
+
 /** 历史回放用：user / assistant(reasoning+text) / tool call（pending）。 */
 export function acpUpdates(ev) {
   const d = ev?.data || {};
@@ -45,12 +88,14 @@ export function acpUpdates(ev) {
     return out;
   }
   if (ev.type === 'tool/call') {
+    const { kind, input } = acpToolInput(d.name, d.arguments);
     return [{
       sessionUpdate: 'tool_call',
       toolCallId: String(d.callId || ev.seq),
       title: String(d.name || 'tool'),
-      kind: 'other',
+      kind,
       status: 'pending',
+      rawInput: input,
     }];
   }
   if (ev.type === 'todo/write') {
@@ -77,6 +122,8 @@ export function toolResultUpdate(ev) {
     sessionUpdate: 'tool_call_update',
     toolCallId: callId,
     status: 'completed',
+    // Paseo 用 rawOutput 填工具卡片的 output；只给 content 时卡片会空
+    rawOutput: text,
     content: text ? [{ type: 'content', content: { type: 'text', text } }] : [],
   };
 }

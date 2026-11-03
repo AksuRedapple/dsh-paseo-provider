@@ -117,7 +117,25 @@ ACP 路径（`acp-server.mjs` + stdio JSON-RPC）：
 | steer | 长任务运行中发 `delivery:'steer'` → `{type:'steer', turnId:'dsh-turn-4'}`，与 `session.turn started` 一致；随后 interrupt → `turn canceled` |
 | 协议探测 | `session/projections` / `session/rename` / `session/fork` 存在；`archive/delete/compact/commands` 返回 404（DSH 无对应能力） |
 
-## 6. 未覆盖 / 局限
+## 6. 真实任务 dogfood（2026-11-03）
+
+用 `/tmp` 干净工作区跑真实任务（不是只回 OK），通过 Paseo CLI + Web UI：
+
+| 场景 | 结果 |
+|---|---|
+| WS 文件任务 | `创建 hello.txt → cat → FILE-OK`：文件落盘（5 bytes）、工具卡显示 `[Shell] printf …`、回复正确 |
+| WS 多轮 | 第二轮追加 `world` → 文件为 `hello world`，历史只出现一次、无重放 |
+| WS 中断 | 3000 字长任务运行 5s 后 interrupt → `INTERRUPTED`、状态 idle，随后 `ALIVE-OK` 正常 |
+| WS usage | `LastUsage {input:137, output:3, cached:27264}` |
+| ACP 文件任务 | `创建 acp.txt → cat → ACP-FILE-OK`：文件落盘、`[Write]`/`[Bash]` 工具卡、回复正确 |
+| ACP 多轮 | 第二轮 `ACP-ALIVE` 正常，历史无重放 |
+| ACP 图片 | Paseo `--image` 1×1 PNG → `ACP-IMG-OK`，`session/prompt` 收到 image block |
+| ACP 模型切换（UI） | composer 选 `DeepSeek-V4-Pro · DeepSeek` → Paseo 发 `session/set_config_option`，currentValue 更新 |
+| ACP 工具卡（修复后） | `rawInput {filePath, content}` / `rawOutput "ok"` 进入 wire；单测 `acp-3/4` 锁定 |
+
+发现的限制：Paseo 注入的 MCP servers 不会进入 DSH（两个 provider 都只暴露 DSH 自身工具）。
+
+## 7. 未覆盖 / 局限
 
 - seq 重置只有单测与恢复策略，没有真实 DSH 重启样本。
 - 快照窗口固定（实测 `maxMessages` 调到 2000 仍是 342 条、`hasMore=true`）；超长历史会截断（有 notice）。
@@ -126,7 +144,7 @@ ACP 路径（`acp-server.mjs` + stdio JSON-RPC）：
 - 只在 macOS + Node 26 验证；CI 矩阵为 Node 22/24（尚未在 GitHub 实跑）。
 - 最终真机回归已完成（见 §2），但 DSH 桌面 0.2.1-rc.5 仍会在启动时 inspector 崩溃；本次通过直接拉起 desktop-host 子进程完成验证，桌面壳需等上游修复或回退 rc.3。
 
-## 7. 复现
+## 8. 复现
 
 ```bash
 npm install

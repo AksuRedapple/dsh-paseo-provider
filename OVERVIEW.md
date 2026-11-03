@@ -36,5 +36,6 @@ The plugin runs unsandboxed with the permissions of the user running the Paseo d
 
 - DSH snapshot windows are fixed by DSH; very long histories may be truncated (the plugin reports truncation instead of paginating).
 - Permission prompts, slash commands, session revert and archive are not supported because DSH exposes no corresponding endpoints or runs without per-tool approval.
+- MCP servers configured in Paseo are not forwarded into DSH; the agent only sees DSH's own tools.
 - Verified on macOS with DSH 0.2.1-rc.x and Paseo 0.14; other platforms are untested.
 - DSH is a private protocol. Unknown events and fields are reported as notices rather than guessed, but a DSH release can still change behavior.

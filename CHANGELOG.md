@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.3 — 2026-11-03
+
+Real-task dogfooding fixes.
+
+- ACP tool cards now send `rawInput` (command / file path / edit strings) and `rawOutput`, so Paseo no longer renders bare tool names.
+- Document that Paseo MCP servers are not forwarded into DSH.
+
 ## 1.0.2 — 2026-11-03
 
 Registry listing name and positioning.
