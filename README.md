@@ -23,7 +23,7 @@
 - **基础交互对齐官方 provider**：支持图片 prompt（转成 DSH 的 `mediaType`）、运行中 steer 插话（DSH `mode:'steer'`）、`todo/write` → 时间线任务列表（ACP 为 `plan`）。
 - **上下文不污染时间线**：DSH 注入的 system-reminder / ssot-context / 时间戳等 user/message 按 `source.kind` 过滤。
 - **失败面显式化**：seq 重置、快照截断、未知事件、工具无结果、连接中断都会变成可见的 notice/日志。
-- **测试**：36 条测试（11 个测试文件），见 `docs/VERIFICATION.md`。
+- **测试**：39 条测试（12 个测试文件），见 `docs/VERIFICATION.md`。
 
 ## Provider 契约覆盖
 
@@ -43,15 +43,20 @@
 
 ### `dsh-acp`
 
-| 方法 / 更新 | 状态 |
-|---|---|
-| initialize / session/new / session/prompt / session/load / session/cancel / session/close | ✅ |
-| 实时 reasoning / text / tool_call / tool_call_update | ✅ |
-| 模型 + reasoning effort（`configOptions` / `session/set_config_option`，兼容 `session/set_model`） | ✅ |
-| usage（`usage_update`，上下文窗口 + 已用 token） | ✅ |
-| 图片 prompt（`promptCapabilities.image`）/ 任务列表（`plan` ← `todo/write`） | ✅ |
-| `loadSession` 能力声明 | ✅ |
-| permission / mode / 斜杠命令 | ❌ 未做 |
+默认注册手写适配器（快、plan/todo/图片/`session/load`，依赖 `DSH_BASE`/`DSH_MUX`）。设置 `DSH_ACP_MODE=official|both` 可额外注册 `dsh-acp-official`，它直接起 DSH 官方 `dsh --profile acp`（自动发现桌面版内置 CLI 或 PATH 上的 `dsh`）。
+
+| 方法 / 更新 | `dsh-acp`（默认） | `dsh-acp-official`（opt-in） |
+|---|---|---|
+| initialize / session/new / session/prompt / session/cancel / session/close | ✅ | ✅ |
+| 实时 reasoning / text / tool_call / tool_call_update | ✅ | ✅ |
+| 模型 + reasoning effort（`configOptions` / `session/set_config_option`） | ✅ | ✅ |
+| usage（`usage_update`） | ✅ | ✅ |
+| 图片 prompt / 任务列表（`plan` ← `todo/write`） | ✅ | 图片取决于官方路由；官方不支持 plan |
+| `session/load` 历史回放 | ✅ | ❌（官方是 `session/list` + `session/resume`，不回放） |
+| permission 审批 / MCP / 会话恢复 | ❌ | ✅（官方 ACP） |
+| 冷启动 | 即时 | 30–90s（官方启动时拉模型列表） |
+
+`DSH_ACP_MODE`：`legacy`（默认）｜`official`｜`both`。官方模式的启动超时可用 `DSH_ACP_STARTUP_MS` 调整（默认 120s），CLI 路径可用 `DSH_CLI` 覆盖。
 
 ## 架构
 
@@ -69,8 +74,9 @@ dsh-provider  ┌───────────────┐      ┌──
               │ dsh-client.ts │─────▶ session/list · create · prompt
               └───────────────┘
 
-dsh-acp  acp-server.mjs ── stdio ACP ── Paseo
+dsh-acp（默认）  acp-server.mjs ── stdio ACP ── Paseo
               └── 复用 dsh-client + turn-state.mjs
+dsh-acp-official  官方 dsh --profile acp ── stdio ACP ── Paseo（opt-in；permissions/MCP/resume）
 ```
 
 ## DSH 协议速记（实测）
@@ -107,6 +113,10 @@ paseo provider ls          # 应看到 dsh / dsh-acp available
 | `DSH_DEFAULT_CWD` | `$HOME` | 新建会话的默认 cwd |
 | `DSH_TITLE_CONCURRENCY` | `8` | 列表补标题的并发上限 |
 | `DSH_ACP_REPLAY_CHUNK` | `50` | ACP `session/load` 每批通知数 |
+| `DSH_ACP_MODE` | `legacy` | `legacy`（默认）｜`official`｜`both`；official 注册 `dsh-acp-official` |
+| `DSH_CLI` | 自动发现 | 官方 CLI 路径；否则找桌面版内置 CLI，再找 PATH |
+| `DSH_ACP_PROFILE` | `acp` | 官方 ACP 使用的 DSH profile |
+| `DSH_ACP_STARTUP_MS` | `120000` | 官方 ACP 启动超时（冷启动会拉模型列表） |
 
 ## 测试
 
@@ -124,7 +134,8 @@ node --test tools/tests/provider_stream.test.mjs
 - Paseo 契约没有 token delta 事件；`assistant-stream` 用于 reasoning 预览与状态判定，正文不逐字渲染。
 - 快照窗口由 DSH 服务端控制（实测 `maxMessages=2000` 仍只返回 342 条、`hasMore=true`）；超长历史会截断（有 notice，不会自动分页）。
 - `session.revert` / `session.archive` / `session.unarchive` 未实现，会显式返回 `request.failed(dsh/unsupported)`。
-- ACP 已支持持久流、实时 reasoning/text、tool_call/tool_call_update、模型/思考档位与 usage；权限桥接与模式切换未做。
+- ACP 已支持持久流、实时 reasoning/text、tool_call/tool_call_update、模型/思考档位与 usage；默认通道的权限桥接与模式切换未做。官方 `dsh-acp-official` 提供 permissions/MCP/会话恢复，但冷启动需 30–90s（拉模型列表），且不支持 plan/命令。
+- 官方 ACP 通道通过 `DSH_ACP_MODE=official|both` 开启；默认不启用，避免每个新会话都付模型列表的冷启动成本。
 - DSH 投影的 `modelSelection` 只在模型切换后（或完成一轮）才有值；空白会话回落到目录默认值。
 - Paseo 注入的 MCP servers 不会转发进 DSH（两个 provider 都只接 DSH 自己的工具）；capabilities 里的 `McpServers` 是 Paseo 侧默认值，不代表已实现。
 - `session/load` 与 WS 历史一样受快照窗口限制。

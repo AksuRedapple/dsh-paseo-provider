@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.1.0 — 2026-11-03
+
+Official ACP channel, opt-in.
+
+- Add `server/dsh-cli.mjs`: discover the `dsh` CLI via `DSH_CLI`, the CLI bundled with the DSH desktop app, then `PATH`.
+- Add `dsh-acp-official` (`DSH_ACP_MODE=official|both`): launches the official `dsh --profile acp` server, gaining permission prompts, HTTP MCP servers and session list/resume. Uses a 120s startup timeout and `workspaceOnlyCatalog` because the official profile lists models at startup (30–90s cold start in testing).
+- Keep the existing adapter as the default `dsh-acp`: instant startup, plans/todos/images/`session/load`.
+- New env vars: `DSH_ACP_MODE`, `DSH_CLI`, `DSH_ACP_PROFILE`, `DSH_ACP_STARTUP_MS`.
+- Tests: CLI discovery unit tests.
+
 ## 1.0.3 — 2026-11-03
 
 Real-task dogfooding fixes.

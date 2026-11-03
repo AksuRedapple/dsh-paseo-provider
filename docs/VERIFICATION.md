@@ -8,9 +8,9 @@
 
 ```bash
 ./check.sh
-# ▸ tests 共 11 个测试（fast）
+# ▸ tests 共 12 个测试（fast）
 # ▸ 结果: pass=11 fail=0
-# node --test: 36 / pass 36 / fail 0
+# node --test: 39 / pass 39 / fail 0
 # 干净目录 npm ci → check.sh 通过（Node 26 / Node 24）；Node 22.23.4 直跑通过
 ```
 
@@ -135,11 +135,23 @@ ACP 路径（`acp-server.mjs` + stdio JSON-RPC）：
 
 发现的限制：Paseo 注入的 MCP servers 不会进入 DSH（两个 provider 都只暴露 DSH 自身工具）。
 
+### 官方 ACP 通道（opt-in，真机）
+
+| 场景 | 结果 |
+|---|---|
+| CLI 发现 | 桌面版内置 `/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh`，`--version` = 0.2.1-rc.5 |
+| `initialize` | 30s（冷启动会拉 `api.deepseek.com` 模型列表）；返回 `mcpCapabilities.http: true`、`sessionCapabilities: list/resume` |
+| `session/new` | 再 +6s，返回分组模型 configOptions |
+| Paseo 建 ACP agent | 单次 64s；同 workspace 第二个 agent 96s（每次 spawn 一个新进程） |
+| Paseo discovery | 默认 10s 超时会误判 `did not initialize`；改用 `startupTimeoutMs=120s` + `workspaceOnlyCatalog` 后稳定 |
+| 结论 | 官方通道能力更全（permissions/MCP/resume），但冷启动成本高 → 保留为 `DSH_ACP_MODE=official|both` 的 opt-in，默认仍用手写适配器 |
+
 ## 7. 未覆盖 / 局限
 
 - seq 重置只有单测与恢复策略，没有真实 DSH 重启样本。
 - 快照窗口固定（实测 `maxMessages` 调到 2000 仍是 342 条、`hasMore=true`）；超长历史会截断（有 notice）。
-- `session.revert` / `archive` / `unarchive` 未实现（DSH 无对应端点，显式 `request.failed`）；`prompt.command`（DSH 没有命令注册 RPC）与 permission 桥接未做。
+- `session.revert` / `archive` / `unarchive` 未实现（DSH 无对应端点，显式 `request.failed`）；`prompt.command`（DSH 没有命令注册 RPC）两个 ACP 模式都不支持。
+- 默认 `dsh-acp` 没有 permission 桥接与 MCP；官方 `dsh-acp-official`（`DSH_ACP_MODE=official|both`）提供 permissions/MCP/session resume，但冷启动 30–90s，且不支持 plan/历史回放。
 - 仅 2 个并发会话做过真机；更高并发未压测。
 - 只在 macOS + Node 26 验证；CI 矩阵为 Node 22/24（尚未在 GitHub 实跑）。
 - 最终真机回归已完成（见 §2），但 DSH 桌面 0.2.1-rc.5 仍会在启动时 inspector 崩溃；本次通过直接拉起 desktop-host 子进程完成验证，桌面壳需等上游修复或回退 rc.3。
