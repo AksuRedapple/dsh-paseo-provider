@@ -144,6 +144,18 @@ export function createProvider() {
                 }
                 const ctx = await sessionContextUsage(dshId).catch(() => null);
                 if (ctx) emit({ type: 'session.usage', sessionId: sid, usage: ctx });
+                if (await sessionRunning(dshId).catch(() => false)) {
+                  emit({
+                    type: 'session.notice',
+                    sessionId: sid,
+                    notice: {
+                      id: `running-${Date.now()}`,
+                      severity: 'warning',
+                      title: 'DSH',
+                      description: '该 DSH 会话正在运行（可能来自 DSH 桌面版或其他客户端）；发送消息会被拒绝，直到当前轮结束',
+                    },
+                  });
+                }
 
                 if (input.history === 'replay' && input.persistence?.data?.sessionId) {
                   const snap = await fetchSessionSnapshot(dshId);
@@ -234,6 +246,24 @@ export function createProvider() {
                     sessionId: input.sessionId,
                     clientMessageId,
                     result: { type: 'failed', error: { message: 'session busy: a turn is already running', code: 'dsh/busy' } },
+                  });
+                  break;
+                }
+                // DSH 里可能已经有别的客户端在跑（例如桌面版/另一个 Paseo 连接）。
+                // 这种会话 queue 进去不会产生 turn/start，Paseo 60s 后会报 run did not start，
+                // 不如当场失败并说清楚。
+                if (await sessionRunning(dshId).catch(() => false)) {
+                  emit({
+                    type: 'session.prompt_result',
+                    sessionId: input.sessionId,
+                    clientMessageId,
+                    result: {
+                      type: 'failed',
+                      error: {
+                        message: 'DSH 会话正在运行（可能来自 DSH 桌面版或其他客户端）；请等当前轮结束或先在 DSH 中取消',
+                        code: 'dsh/busy',
+                      },
+                    },
                   });
                   break;
                 }
@@ -455,6 +485,16 @@ async function sessionContextUsage(dshId: string) {
     return contextUsageOf(items.find((s) => s.sessionId === dshId));
   } catch {
     return null;
+  }
+}
+
+/** 会话是否正在运行（可能来自 DSH 桌面版 / 其他客户端）。 */
+async function sessionRunning(dshId: string): Promise<boolean> {
+  try {
+    const items = await listSessions();
+    return items.find((s) => s.sessionId === dshId)?.running === true;
+  } catch {
+    return false;
   }
 }
 

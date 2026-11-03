@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.0.1 — 2026-11-03
+
+- Prompting a DSH session that is already running in the desktop app (or another client) now fails fast with `dsh/busy` instead of queueing until Paseo's 60s start timeout.
+- `session.open` emits a warning notice for sessions that are currently running.
+- Test added; 37 tests / 8 files.
+
 ## 2.0.0 — 2026-11-03
 
 WS-only release.

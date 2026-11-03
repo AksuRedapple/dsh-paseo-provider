@@ -1,7 +1,7 @@
 # VERIFICATION — 验证记录
 
 > 日期：2026-11-03 ｜ 环境：macOS (Apple Silicon) · Node 26 · Paseo 0.14 · 本地 DSH
-> 兼容性：Node 22.23.4 / 24.22.1 / 26.12.1 均实跑通过（36 条测试；22/24 用干净目录 `npm ci` 后运行）。
+> 兼容性：Node 22.23.4 / 24.22.1 / 26.12.1 均实跑通过（37 条测试；22/24 用干净目录 `npm ci` 后运行）。
 > 所有数字来自实际运行，不是估算。个人信息已脱敏。
 
 ## 1. 单测
@@ -10,7 +10,7 @@
 ./check.sh
 # ▸ tests 共 8 个测试（fast）
 # ▸ 结果: pass=8 fail=0
-# node --test: 36 / pass 36 / fail 0
+# node --test: 37 / pass 37 / fail 0
 # 干净目录 npm ci → check.sh 通过（Node 26 / Node 24）；Node 22.23.4 直跑通过
 ```
 
@@ -125,6 +125,7 @@ WS 路径（`server/provider.ts` 直连本机 DSH）：
 | 长会话回放 | 482 events → 105 条时间线（user 18 / reasoning 42 / tool 41 / assistant 4），1.18s；`hasMore=true` → notice「DSH 快照被截断」 |
 | 断线重连 | 客户端主动断开第 1 条连接 → `connects=2, snapshots=2, errors=1, gaps=0` |
 | cookie 轮换 | mock 换 cookie 后下一次 RPC 401 → 清缓存 → 重新换 cookie → 成功（`endpoint-7`） |
+| 外部运行中的会话 | `running:true` 的 ssot 会话：打开时提示；prompt 立即失败 `dsh/busy`，不再排队等 60s 超时 |
 | seq 重置 | 无真实样本；由 `provider_stream` 的 reset 单测覆盖 |
 
 ## 7. 未覆盖 / 局限

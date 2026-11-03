@@ -37,3 +37,4 @@ The plugin runs unsandboxed with the permissions of the user running the Paseo d
 - DSH is a private protocol; unknown events are reported as notices, but a DSH release can still change behavior.
 - Very long histories are truncated by DSH (reported as a notice; no pagination).
 - Permission prompts, MCP servers, slash commands, session revert and archive are not supported.
+- Prompting a DSH session that is already running in another client fails fast with a visible error instead of queueing.

@@ -87,3 +87,31 @@ test('lifecycle: can_stop/interrupt/close on a running turn', async (t) => {
   const last = events.filter((e) => e.type === 'session.prompt_result').at(-1);
   assert.equal(last.result.type, 'failed');
 });
+
+test('lifecycle: 外部运行的 DSH 会话 → 打开提示 + prompt 快速失败', async (t) => {
+  const mock = await startMockDsh(() => {}, {
+    sessions: [{ sessionId: 'mock-session', running: true }],
+  });
+  process.env.DSH_BASE = `http://127.0.0.1:${mock.port}`;
+  process.env.DSH_MUX = `ws://127.0.0.1:${mock.port}`;
+  t.after(() => mock.close());
+
+  const { createProvider } = await import('../../server/provider.ts');
+  const conn = await createProvider().connect({});
+  const events = [];
+  conn.onEvent((e) => events.push(e));
+
+  await conn.send({
+    type: 'session.open', requestId: 'r1', sessionId: 'p1',
+    config: { cwd: '/tmp' }, history: 'skip',
+  });
+  await waitFor(events, (e) => e.type === 'session.ready');
+  const notice = events.find((e) => e.type === 'session.notice' && /正在运行/.test(e.notice?.description || ''));
+  assert.ok(notice, 'running notice expected');
+
+  await prompt(conn, 'p1');
+  const failed = await waitFor(events, (e) => e.type === 'session.prompt_result');
+  assert.equal(failed.result.type, 'failed');
+  assert.equal(failed.result.error.code, 'dsh/busy');
+  assert.ok(!mock.calls.some((c) => c.method === 'session/prompt'), 'must not queue a prompt');
+});

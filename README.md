@@ -105,6 +105,7 @@ node --test tools/tests/provider_stream.test.mjs
 - DSH 是私有协议；rc 升级可能改变日志/字段，未知事件会告警而不是猜测。
 - 快照窗口由 DSH 控制，超长历史会截断（有 notice，不分页）。
 - 权限审批、MCP、斜杠命令、revert/archive 未做（DSH desktop preset 自动执行 / 无对应端点）。
+- 目标 DSH 会话正在运行（桌面版/其他客户端）时，发送消息会立即失败并提示 `dsh/busy`，不会排队等待。
 
 ## License
 
