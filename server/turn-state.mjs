@@ -46,6 +46,8 @@ function userText(ev) {
  *   echoTimeoutMs?: number,
  *   budgetMs?: number,
  *   replyIdleTicks?: number,
+ *   startPhase?: 'waitEcho' | 'running',
+ *   noticeTruncation?: boolean,
  * }} opts
  */
 export function createTurnState(opts) {
@@ -57,6 +59,7 @@ export function createTurnState(opts) {
     budgetMs = 120_000,
     replyIdleTicks = 5,
     startPhase = 'waitEcho',
+    noticeTruncation = true,
   } = opts;
   if (typeof startSeq !== 'number') {
     throw new Error('createTurnState: startSeq 必须显式传入');
@@ -103,7 +106,7 @@ export function createTurnState(opts) {
       }
       if (snapshot?.hasMore && !truncated) {
         truncated = true;
-        notice('DSH 快照被截断（hasMore=true），历史不完整；实时流不受影响');
+        if (noticeTruncation) notice('DSH 快照被截断（hasMore=true），历史不完整；实时流不受影响');
         push({ type: 'truncated', cursor: lastSeq });
       }
       return out.splice(0);

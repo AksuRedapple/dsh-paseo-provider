@@ -868,6 +868,8 @@ export async function runTurn(
       echoTimeoutMs: deps.echoTimeoutMs ?? 15_000,
       budgetMs: deps.budgetMs ?? 120_000,
       startPhase: deps.startPhase ?? 'waitEcho',
+      // 每轮 follow 的首个快照都会 hasMore=true；截断只在打开/回放历史时提示一次
+      noticeTruncation: false,
     });
     handle(state.onSnapshot(snap));
     await (deps.prompt || promptSession)(dshId, deps.content ?? text, deps.mode ?? 'queue');

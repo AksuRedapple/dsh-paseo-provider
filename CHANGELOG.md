@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.0.3 — 2026-11-03
+
+- Stop emitting the snapshot-truncation notice on every turn. The notice is only shown when opening or replaying history.
+
 ## 2.0.2 — 2026-11-03
 
 - Prompting a DSH session that is already running elsewhere now steers into the current turn by default. Set `DSH_RUNNING_MODE=fail` to reject with `dsh/busy` instead.

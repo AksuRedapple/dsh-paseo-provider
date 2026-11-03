@@ -124,6 +124,7 @@ WS 路径（`server/provider.ts` 直连本机 DSH）：
 | usage 上下文 | 一轮后日志 `[dsh] context usage 26678 / 1048576`；`session.usage` 同时带 `contextWindowUsedTokens` / `contextWindowMaxTokens` |
 | 长会话回放 | 482 events → 105 条时间线（user 18 / reasoning 42 / tool 41 / assistant 4），1.18s；`hasMore=true` → notice「DSH 快照被截断」 |
 | 断线重连 | 客户端主动断开第 1 条连接 → `connects=2, snapshots=2, errors=1, gaps=0` |
+| 截断提示 | 打开/回放历史时提示一次；每轮 follow 的 `hasMore` 不再重复弹 notice（`provider-mock` 断言） |
 | cookie 轮换 | mock 换 cookie 后下一次 RPC 401 → 清缓存 → 重新换 cookie → 成功（`endpoint-7`） |
 | 外部运行中的会话 | 默认 `steer` 插入当前轮次（mock：`mode=steer`、synthetic turn、completed）；`DSH_RUNNING_MODE=fail` 时立即 `dsh/busy` |
 | seq 重置 | 无真实样本；由 `provider_stream` 的 reset 单测覆盖 |

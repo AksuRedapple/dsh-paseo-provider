@@ -14,7 +14,7 @@ registerHooks({
 });
 
 test('provider-mock: WS prompt emits tool, text, usage, completion', async (t) => {
-  const mock = await startMockDsh((ws, streamId) => sendMockTurn(ws, streamId));
+  const mock = await startMockDsh((ws, streamId) => sendMockTurn(ws, streamId), { hasMore: true });
   process.env.DSH_BASE = `http://127.0.0.1:${mock.port}`;
   process.env.DSH_MUX = `ws://127.0.0.1:${mock.port}`;
   t.after(() => mock.close());
@@ -62,4 +62,5 @@ test('provider-mock: WS prompt emits tool, text, usage, completion', async (t) =
 
   const turn = events.find((e) => e.type === 'session.turn' && e.state === 'completed');
   assert.ok(turn, 'session.turn completed expected');
+  assert.ok(!events.some((e) => e.type === 'session.notice' && /截断/.test(e.notice?.description || '')), 'no per-turn truncation notice');
 });

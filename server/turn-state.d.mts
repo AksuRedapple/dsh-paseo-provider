@@ -37,6 +37,7 @@ export function createTurnState(opts: {
   budgetMs?: number;
   replyIdleTicks?: number;
   startPhase?: 'waitEcho' | 'running';
+  noticeTruncation?: boolean;
 }): TurnState;
 
 export function classifyEvent(type: string): 'timeline' | 'turn' | 'ignore' | 'unknown';
