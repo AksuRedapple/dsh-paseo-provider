@@ -27,19 +27,24 @@ git commit -m "feat: DSH providers for Paseo (WS + ACP) with persistent streamin
 
 ## 3. 发布到 GitHub
 
-先确认：**仓库名、可见性（public/private）、是否建 organization**。然后：
+先确认：**仓库名、可见性（public/private）、目标账号**。本机 `gh` 当前 active 可能是 `ouya15`，发布到 aksu 账号前先切换：
 
 ```bash
-# 示例：仓库名由用户确认后替换
-gh repo create aksu/<repo-name> --source . --public --push
+gh auth status
+gh auth switch --user AksuRedapple    # 以确认到的账号名为准
+```
+
+确认后一键发布（会建仓、push main 和 v1.0.0 tag）：
+
+```bash
+tools/publish.sh AksuRedapple <repo-name> public   # 或 private
 ```
 
 或手动：
 
 ```bash
-git remote add origin git@github.com:aksu/<repo-name>.git
-git branch -M main
-git push -u origin main
+gh repo create AksuRedapple/<repo-name> --public --source . --remote origin --push
+git push origin v1.0.0
 ```
 
 ## 4. 发布后
