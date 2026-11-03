@@ -53,6 +53,8 @@ inspector: source state exceeds the source-frame byte limit
 
 - 回退桌面版到与 runtime 匹配的版本，或升级 runtime/等待上游修复；
 - 本机实测 workaround（2026-11-03）：备份 `~/.dsh/profiles/desktop/package.json`，从 `dsh.profile.bundles` 移除 `@deepseek-ai/dsh-experimental-inspector-profile`，再跑 `~/bin/dsh-start.sh`；8780 恢复、inspector 不再崩溃；
+- 回滚 rc.3 的实测结论：官方 rc.3 包签名有效，但在 macOS 27.2 上进程停于 dyld（无 host、无 8780），回滚不可行；保留 rc.5 + 移除 inspector；
+- 锁定更新（无 sudo）：把 `~/Library/Caches/@deepseek-aidsh-desktop-updater` 与 `com.deepseek.dsh.ShipIt` 设为只读，并禁用 pending；app bundle 受 macOS App Management 保护，用户级 `chflags/chmod` 会被拒；需要硬锁时用 `sudo chflags uchg "/Applications/DeepSeek Harness.app"`（或 hosts 阻断下载域）；
 - 不要通过改 provider 绕过：DSH 后端没起时 provider 只能报 unavailable。
 
 ## 6. 收集证据
