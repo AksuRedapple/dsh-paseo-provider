@@ -40,7 +40,10 @@ test('acp-mock: prompt path streams text + tool lifecycle', async (t) => {
         if (j.method === 'session/update') updates.push(j.params.update);
         if (j.id === 2) {
           send({ jsonrpc: '2.0', id: 3, method: 'session/prompt',
-            params: { sessionId: 'mock-session', prompt: [{ type: 'text', text: 'hello' }] } });
+            params: { sessionId: 'mock-session', prompt: [
+              { type: 'text', text: 'hello' },
+              { type: 'image', data: 'aGVsbG8=', mimeType: 'image/png' },
+            ] } });
         }
         if (j.id === 3) { clearTimeout(timer); resolve(j.result); }
       }
@@ -51,6 +54,17 @@ test('acp-mock: prompt path streams text + tool lifecycle', async (t) => {
   const types = updates.map((u) => u.sessionUpdate);
   assert.ok(types.includes('tool_call'), 'tool_call update expected');
   assert.ok(types.includes('tool_call_update'), 'tool_call_update expected');
+  const plan = updates.filter((u) => u.sessionUpdate === 'plan').at(-1);
+  assert.ok(plan, 'plan update expected');
+  assert.deepEqual(plan.entries.map((e) => [e.content, e.status]), [
+    ['step one', 'completed'],
+    ['step two', 'in_progress'],
+  ]);
+  const promptCall = mock.calls.find((c) => c.method === 'session/prompt');
+  assert.deepEqual(promptCall.args.content, [
+    { type: 'text', text: 'hello' },
+    { type: 'image', data: 'aGVsbG8=', mediaType: 'image/png' },
+  ]);
   const text = updates.filter((u) => u.sessionUpdate === 'agent_message_chunk')
     .map((u) => u.content?.text).join('');
   assert.equal(text, 'mock-answer', 'text must be streamed exactly once');

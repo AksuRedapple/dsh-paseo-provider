@@ -6,7 +6,8 @@
  *   · snapshot.cursor < lastSeq 判 seq 重置，重建基线且不回放；
  *   · hasMore 发 truncated；未知帧发 unknown；重连缺口发 gap。
  */
-const MUX = process.env.DSH_MUX || 'ws://127.0.0.1:8781/api/remote.mux';
+// 运行期读取：测试会给每个用例换 mock 端口
+const muxUrl = () => process.env.DSH_MUX || 'ws://127.0.0.1:8781/api/remote.mux';
 const DEFAULT_BACKOFF = [250, 500, 1000, 2000, 5000];
 
 function parseFrame(data) {
@@ -18,7 +19,7 @@ function parseFrame(data) {
 }
 
 export function followSession(sessionId, opts = {}) {
-  const url = opts.url || MUX;
+  const url = opts.url || muxUrl();
   const connect = opts.connect || ((u) => new WebSocket(u));
   const backoff = opts.backoffMs || DEFAULT_BACKOFF;
   const reconnectEnabled = opts.reconnect !== false;

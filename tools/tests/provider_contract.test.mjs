@@ -64,7 +64,14 @@ test('contract: sessions title fill, history replay, unsupported input', async (
   const items = events.filter((e) => e.type === 'timeline.item').map((e) => e.item);
   assert.ok(items.some((i) => i.type === 'user_message' && i.text === 'first question'));
 
-  await conn.send({ type: 'session.configure', requestId: 'r3', sessionId: 'p1' });
-  const failed = await waitFor(events, (e) => e.type === 'request.failed' && e.requestId === 'r3');
+  // session.configure 现在是支持的：至少要把 session.config 完整快照推回来
+  const beforeConfigs = events.filter((e) => e.type === 'session.config').length;
+  await conn.send({ type: 'session.configure', requestId: 'r3', sessionId: 'p1', changes: {} });
+  await waitFor(events, (e) => e.type === 'request.completed' && e.requestId === 'r3');
+  assert.equal(events.filter((e) => e.type === 'session.config').length, beforeConfigs + 1);
+
+  // 真正未实现的输入仍然必须显式失败，不能静默
+  await conn.send({ type: 'session.revert', requestId: 'r4', sessionId: 'p1' });
+  const failed = await waitFor(events, (e) => e.type === 'request.failed' && e.requestId === 'r4');
   assert.equal(failed.error.code, 'dsh/unsupported');
 });

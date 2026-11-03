@@ -51,7 +51,8 @@ test('acp-load: replays records and replies after updates', async (t) => {
     });
   });
 
-  assert.deepEqual(result, {});
+  const model = result.configOptions?.find((o) => o.category === 'model');
+  assert.equal(model?.currentValue, 'prov-a::mock-pro', 'load 也要返回当前模型');
   const types = updates.map((u) => u.sessionUpdate);
   assert.ok(types.includes('user_message_chunk'));
   assert.ok(types.includes('agent_message_chunk'));

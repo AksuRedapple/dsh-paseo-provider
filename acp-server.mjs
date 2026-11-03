@@ -19,14 +19,21 @@ import fs from 'node:fs';
 import os from 'node:os';
 import { createTurnState } from './server/turn-state.mjs';
 import { followSession, readSnapshot } from './server/dsh-follow.mjs';
-import { acpUpdates, toolResultUpdate, textOf } from './server/acp-map.mjs';
+import { acpUpdates, toolResultUpdate, acpUsageUpdate, contentOf } from './server/acp-map.mjs';
+import { acpConfigOptions, parseModelId, sessionModelRef, contextWindowOf } from './server/model-catalog.mjs';
 const LOG='/tmp/dsh-acp.log';
 const log=(d)=>fs.appendFileSync(LOG, new Date().toISOString()+' '+d+'\n');
 
 const BASE = process.env.DSH_BASE || 'http://127.0.0.1:8781';
 
 async function rpc(method, args, wrap = 'request') {
-  const body = { type: 'client-request', rpcId: `a${Date.now()}`, method, payload: { args: { [wrap]: args } } };
+  const body = {
+    type: 'client-request',
+    rpcId: `a${Date.now()}`,
+    method,
+    // 实测：session/list 用 _request，session/create 等用 request，modelCatalog 裸参数
+    payload: { args: wrap === 'none' ? args : { [wrap]: args } },
+  };
   const res = await fetch(`${BASE}/api/${method}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -46,14 +53,90 @@ async function rpc(method, args, wrap = 'request') {
 }
 
 const createSession = async (cwd) => (await rpc('session/create', { cwd })).sessionId;
-const promptSession = (sessionId, text, mode = 'queue') =>
+const promptSession = (sessionId, content, mode = 'queue') =>
   rpc('session/prompt', {
     requestId: crypto.randomUUID(), sessionId, mode,
-    content: [{ type: 'text', text }], clientTimeZone: 'Asia/Shanghai',
+    content: typeof content === 'string' ? [{ type: 'text', text: content }] : content,
+    clientTimeZone: 'Asia/Shanghai',
   });
+const selectModelRpc = (sessionId, provider, model, reasoningEffort) =>
+  rpc('session/selectModel', {
+    sessionId, provider, model,
+    ...(reasoningEffort ? { reasoningEffort } : {}),
+  }, 'request');
+
+// ---- 模型目录 / 上下文窗口（展示用增强，失败不阻断对话） ----
+let catalogCache = null;
+async function loadCatalog() {
+  if (catalogCache && Date.now() - catalogCache.at < 60_000) return catalogCache.value;
+  const value = await rpc('session/modelCatalog', {}, 'none');
+  catalogCache = { at: Date.now(), value };
+  return value;
+}
+async function listSessionsSafe() {
+  const v = await rpc('session/list', {}, '_request');
+  return v?.items || [];
+}
+async function resolveSessionModel(dshId) {
+  try {
+    const items = await listSessionsSafe();
+    const ref = sessionModelRef(items.find((s) => s.sessionId === dshId));
+    if (ref) return ref;
+  } catch {}
+  try {
+    const cat = await loadCatalog();
+    const d = cat?.default;
+    return d?.provider && d.model ? { provider: d.provider, model: d.model } : null;
+  } catch {
+    return null;
+  }
+}
+const ctxCache = new Map(); // dshSessionId -> { size, at }
+async function contextWindowFor(dshId) {
+  const hit = ctxCache.get(dshId);
+  if (hit && Date.now() - hit.at < 60_000) return hit.size;
+  try {
+    const items = await listSessionsSafe();
+    const size = contextWindowOf(items.find((s) => s.sessionId === dshId));
+    if (size) ctxCache.set(dshId, { size, at: Date.now() });
+    return size;
+  } catch {
+    return undefined;
+  }
+}
+
+/** 应用模型/思考档位变更 → 返回最新 configOptions。 */
+async function applyModelSelection(acpId, configId, value) {
+  const dshId = sessions.get(acpId) || acpId;
+  const cat = await loadCatalog();
+  const before = sessionConfig.get(acpId) ?? (await resolveSessionModel(dshId));
+  let next;
+  if (configId === 'model') {
+    const parsed = parseModelId(value);
+    if (!parsed) throw new Error(`unknown model id: ${value}`);
+    next = {
+      provider: parsed.provider,
+      model: parsed.model,
+      ...(before?.reasoningEffort ? { reasoningEffort: before.reasoningEffort } : {}),
+    };
+  } else if (configId === 'reasoning_effort') {
+    if (!before) throw new Error('current model is unknown');
+    next = { ...before, reasoningEffort: String(value) };
+  } else {
+    throw new Error(`unknown config option: ${configId}`);
+  }
+  const r = await selectModelRpc(dshId, next.provider, next.model, next.reasoningEffort);
+  next = {
+    provider: r.selected.provider,
+    model: r.selected.model,
+    ...(r.selected.reasoningEffort ? { reasoningEffort: r.selected.reasoningEffort } : {}),
+  };
+  sessionConfig.set(acpId, next);
+  return acpConfigOptions(cat, next);
+}
 
 /** 一轮：持久 follow + 共享状态机；实时发 reasoning / text / tool 更新。 */
-async function streamTurn(acpId, dshId, text, token) {
+async function streamTurn(acpId, dshId, text, token, content) {
   const follow = followSession(dshId, { assistantStream: true, readyTimeoutMs: 15000 });
   token.follow = follow;
   let snap;
@@ -69,6 +152,8 @@ async function streamTurn(acpId, dshId, text, token) {
     startSeq: snap.cursor,
     now: Date.now(),
     budgetMs: 120_000,
+    // 纯图片消息没有可匹配的文本，跳过 echo 阶段
+    startPhase: text ? 'waitEcho' : 'running',
   });
   let reason = 'completed';
   let timer = null;
@@ -92,6 +177,13 @@ async function streamTurn(acpId, dshId, text, token) {
   };
   const frame = async (f) => {
     if (!f) return;
+    // usage 帧不带 turn/step，先于 step 守卫处理；上下文窗口拿不到就不发
+    if (f.type === 'chunk' && f.chunk?.type === 'usage') {
+      const size = await contextWindowFor(dshId);
+      const u = acpUsageUpdate(f.chunk, size);
+      if (u) await update(u);
+      return;
+    }
     // chunk 帧不带 turn/step，沿用 start 帧的 key
     if (f.turn != null && f.step != null) {
       const key = `${f.turn}:${f.step}`;
@@ -131,6 +223,8 @@ async function streamTurn(acpId, dshId, text, token) {
           for (const u of acpUpdates(ev)) await update(u);
         } else if (ev.type === 'tool/result') {
           await update(toolResultUpdate(ev));
+        } else if (ev.type === 'todo/write') {
+          for (const u of acpUpdates(ev)) await update(u);
         }
       } else if (a.type === 'notice') {
         log(`turn notice: ${a.message}`);
@@ -142,7 +236,7 @@ async function streamTurn(acpId, dshId, text, token) {
 
   try {
     await handleActions(state.onSnapshot(snap));
-    await promptSession(dshId, text);
+    await promptSession(dshId, content ?? text);
     let ticking = false;
     timer = setInterval(async () => {
       if (ticking) return;
@@ -190,6 +284,7 @@ const reply = (id, result) => { log('>> id='+id+' '+JSON.stringify(result).slice
 const fail = (id, message) => { log('!! id='+id+' '+message.slice(0,200)); send({ jsonrpc: '2.0', id, error: { code: -32000, message } }); };
 
 const sessions = new Map();   // acpSessionId -> dshSessionId
+const sessionConfig = new Map(); // acpSessionId -> {provider, model, reasoningEffort?}
 const activeTurns = new Map(); // acpSessionId -> { cancelled, follow }
 
 rl.on('line', async (line) => {
@@ -202,7 +297,7 @@ rl.on('line', async (line) => {
       case 'initialize':
         return reply(id, {
           protocolVersion: 1,
-          agentCapabilities: { loadSession: true, promptCapabilities: { image: false } },
+          agentCapabilities: { loadSession: true, promptCapabilities: { image: true } },
         });
       case 'session/new': {
         const cwd = params?.cwd || process.env.DSH_DEFAULT_CWD || os.homedir();
@@ -210,17 +305,28 @@ rl.on('line', async (line) => {
         // 直接用 DSH 的 sessionId 作为 ACP sessionId：
         // Paseo 可能为每次连接起新进程，内存映射不可靠 → 会话 id 自带还原能力
         sessions.set(dshId, dshId);
-        return reply(id, { sessionId: dshId });
+        // 模型选择走 ACP 的 configOptions（category=model / thought_level）
+        let configOptions = [];
+        try {
+          const cat = await loadCatalog();
+          const d = cat?.default;
+          const current = d?.provider && d.model ? { provider: d.provider, model: d.model } : null;
+          if (current) sessionConfig.set(dshId, current);
+          configOptions = acpConfigOptions(cat, current);
+        } catch (e) {
+          log('catalog unavailable ' + String(e).slice(0, 120));
+        }
+        return reply(id, { sessionId: dshId, ...(configOptions.length ? { configOptions } : {}) });
       }
       case 'session/prompt': {
         const acpId = params?.sessionId;
         const dshId = sessions.get(acpId) || acpId;
-        const text = textOf(params?.prompt);
-        if (!text) return reply(id, { stopReason: 'refusal' });
+        const { blocks, text } = contentOf(params?.prompt);
+        if (!blocks.length) return reply(id, { stopReason: 'refusal' });
         const token = { cancelled: false };
         activeTurns.set(acpId, token);
         try {
-          const stop = await streamTurn(acpId, dshId, text, token);
+          const stop = await streamTurn(acpId, dshId, text, token, blocks);
           return reply(id, { stopReason: stop });
         } finally {
           if (activeTurns.get(acpId) === token) activeTurns.delete(acpId);
@@ -244,7 +350,27 @@ rl.on('line', async (line) => {
           }
         }
         log(`load replay ${n} updates`);
-        return reply(id, {});
+        // 回放完再告诉客户端会话的模型状态（Paseo 的 loadSession 响应里读 configOptions）
+        let configOptions = [];
+        try {
+          sessions.set(dshId, dshId);
+          const cat = await loadCatalog();
+          const current = await resolveSessionModel(dshId);
+          if (current) sessionConfig.set(dshId, current);
+          configOptions = acpConfigOptions(cat, current);
+        } catch (e) {
+          log('load config unavailable ' + String(e).slice(0, 120));
+        }
+        return reply(id, configOptions.length ? { configOptions } : {});
+      }
+      case 'session/set_config_option': {
+        const configOptions = await applyModelSelection(params?.sessionId, params?.configId, params?.value);
+        return reply(id, { configOptions });
+      }
+      case 'session/set_model': {
+        // ACP 旧版（SDK < 0.4）的模型切换方法；Paseo 0.14 走 config option
+        const configOptions = await applyModelSelection(params?.sessionId, 'model', params?.modelId);
+        return reply(id, { configOptions });
       }
       case 'session/cancel': {
         const acpId = params?.sessionId;
@@ -269,6 +395,8 @@ rl.on('line', async (line) => {
           try { token.follow?.close(); } catch {}
         }
         activeTurns.delete(acpId);
+        sessionConfig.delete(acpId);
+        ctxCache.delete(sessions.get(acpId) || acpId);
         return reply(id, {});
       }
       default:

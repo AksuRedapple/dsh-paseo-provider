@@ -7,15 +7,44 @@
  *  · send() 只报"收到"，结果一律走 onEvent 推**完整快照**
  *  · ProviderSessionSummary = { persistence:{version,data}, cwd, title?, description?, updatedAt?(ISO) }
  */
-import { listSessions, promptSession, createSession, interruptSession, probeDsh } from './dsh-client';
+import { listSessions, promptSession, createSession, interruptSession, probeDsh, modelCatalog, selectModel } from './dsh-client';
+import type { DshModelCatalog, DshPromptBlock } from './dsh-client';
 import { fetchSessionRecords, followSession, type DshEvent } from './dsh-ws';
 import { createTurnState } from './turn-state.mjs';
+import {
+  catalogDefaults,
+  encodeModelId,
+  parseModelId,
+  sessionModelRef,
+  toProviderConfig,
+  type ModelRef,
+} from './model-catalog.mjs';
 
 type Emit = (e: any) => void;
 
 const defaultCwd = () => process.env.DSH_DEFAULT_CWD || process.env.HOME || process.cwd();
 const normText = (s: unknown) => String(s ?? '').replace(/\s+/g, '');
 let statusCache: { at: number; value: { available: boolean; diagnostic?: string } } | null = null;
+
+/** 与 Paseo 协商的能力（muse/antigravity 等官方 provider 的同款基线，去掉 DSH 没有的
+ *  permission / prompt.command：DSH 用 preset 自动执行，且没有命令注册 RPC）。 */
+const CAPABILITIES = [
+  'session.list',
+  'session.persistence',
+  'prompt.message',
+  'prompt.image',
+  'prompt.steer',
+  'session.configure',
+] as const;
+
+/** 模型目录缓存：Paseo 会在启动/切会话时反复取，60 秒内复用。 */
+let catalogCache: { at: number; value: DshModelCatalog } | null = null;
+async function loadCatalog(maxAgeMs = 60_000): Promise<DshModelCatalog> {
+  if (catalogCache && Date.now() - catalogCache.at < maxAgeMs) return catalogCache.value;
+  const value = await modelCatalog();
+  catalogCache = { at: Date.now(), value };
+  return value;
+}
 
 export function createProvider() {
   return {
@@ -39,35 +68,37 @@ export function createProvider() {
       const listeners: Emit[] = [];
       const openSessions = new Map<string, string>();   // paseoSessionId → dshSessionId
       const activeTurns = new Map<string, AbortController>();
+      const activeTurnIds = new Map<string, string>();   // paseoSessionId → 正在跑的 turnId
+      const sessionModels = new Map<string, ModelRef>(); // paseoSessionId → DSH 当前模型
       const emit: Emit = (e) => listeners.forEach((l) => l(e));
 
       return {
         // ProviderConnection 契约要求（漏了会被判 invalid message）
         version: 1,
-        capabilities: ['session.list', 'session.persistence', 'prompt.message'] as const,
+        capabilities: CAPABILITIES,
 
         /** 只做接收与分发；结果全部以事件返回。 */
         async send(input: any) {
           console.error('[dsh] INPUT', JSON.stringify(input).slice(0,160));
           try {
             switch (input?.type) {
-              case 'catalog':
+              case 'catalog': {
+                const cat = await loadCatalog();
+                const { models, defaultModel, defaultThinkingOption } = catalogDefaults(cat);
+                if (!models.length) throw new Error('DSH 模型目录为空');
                 emit({
                   type: 'catalog',
                   requestId: input.requestId,
                   catalog: {
-                    models: [{
-                      id: 'dsh-default',
-                      label: 'DSH',
-                      description: 'DSH 会话（当前只读：列会话）',
-                      isDefault: true,
-                    }],
+                    models,
                     modes: [{ id: 'default', label: 'default' }],
-                    defaultModel: 'dsh-default',
+                    defaultModel,
                     defaultMode: 'default',
+                    ...(defaultThinkingOption ? { defaultThinkingOption } : {}),
                   },
                 });
                 break;
+              }
 
               case 'sessions': {
                 const items = await listSessions();
@@ -96,11 +127,20 @@ export function createProvider() {
                   type: 'session.opened',
                   requestId: input.requestId,
                   sessionId: sid,
-                  capabilities: ['session.list', 'session.persistence', 'prompt.message'],
+                  capabilities: CAPABILITIES,
                   restoration: 'core',
                   persistence: { version: 1, data: { sessionId: dshId } },
                   cwd: String(input.config?.cwd ?? defaultCwd()),
                 });
+
+                // 把 DSH 侧的当前模型同步给 Paseo（已有会话读 projections.modelSelection，
+                // 新会话回落到目录默认值），否则模型选择器只会显示目录默认值。
+                const model = await resolveSessionModel(dshId).catch(() => null);
+                if (model) sessionModels.set(sid, model);
+                const cat = model ? await loadCatalog().catch(() => null) : null;
+                if (cat) {
+                  emit({ type: 'session.config', sessionId: sid, config: toProviderConfig(cat, model) });
+                }
 
                 if (input.history === 'replay' && input.persistence?.data?.sessionId) {
                   const events = await fetchSessionRecords(dshId);
@@ -128,23 +168,54 @@ export function createProvider() {
 
               case 'session.prompt': {
                 const p = input.prompt || {};
-                const text = extractText(p);
+                const { blocks, text } = extractContent(p);
                 const dshId = openSessions.get(input.sessionId) || input.sessionId;
+                const clientMessageId = p.clientMessageId ?? '';
                 console.error('[dsh] prompt RAW', JSON.stringify(input.prompt).slice(0,300)); console.error('[dsh] prompt →', dshId, JSON.stringify(text).slice(0,80));
-                if (!text) {
+                if (!blocks.length) {
                   emit({
                     type: 'session.prompt_result',
                     sessionId: input.sessionId,
-                    clientMessageId: p.clientMessageId ?? '',
+                    clientMessageId,
                     result: { type: 'failed' },
                   });
+                  break;
+                }
+                // steer：把新消息插进正在运行的轮次，立即回 {type:'steer', turnId}。
+                // Paseo 只有在拿到的 turnId 与它在跑的 turn 一致时才认为插入成功。
+                if (p.delivery === 'steer') {
+                  if (!activeTurns.has(input.sessionId)) {
+                    emit({
+                      type: 'session.prompt_result',
+                      sessionId: input.sessionId,
+                      clientMessageId,
+                      result: { type: 'failed', error: { message: '没有正在运行的轮次可插入（steer）', code: 'dsh/steer' } },
+                    });
+                    break;
+                  }
+                  try {
+                    await promptSession(dshId, blocks, 'steer');
+                    emit({
+                      type: 'session.prompt_result',
+                      sessionId: input.sessionId,
+                      clientMessageId,
+                      result: { type: 'steer', turnId: activeTurnIds.get(input.sessionId) || 'dsh-turn-?' },
+                    });
+                  } catch (e) {
+                    emit({
+                      type: 'session.prompt_result',
+                      sessionId: input.sessionId,
+                      clientMessageId,
+                      result: { type: 'failed', error: { message: errorMessage(e), code: 'dsh/steer' } },
+                    });
+                  }
                   break;
                 }
                 if (activeTurns.has(input.sessionId)) {
                   emit({
                     type: 'session.prompt_result',
                     sessionId: input.sessionId,
-                    clientMessageId: p.clientMessageId ?? '',
+                    clientMessageId,
                     result: { type: 'failed', error: { message: 'session busy: a turn is already running', code: 'dsh/busy' } },
                   });
                   break;
@@ -154,11 +225,20 @@ export function createProvider() {
                 // 不 await：让 interrupt/close 能在本轮运行期间被处理。
                 const ctl = new AbortController();
                 activeTurns.set(input.sessionId, ctl);
-                void runTurn(input.sessionId, dshId, text, emit, { signal: ctl.signal })
+                void runTurn(input.sessionId, dshId, text, emit, {
+                  signal: ctl.signal,
+                  content: blocks,
+                  // 纯图片消息没有可匹配的用户文本，跳过 echo 等待
+                  startPhase: text ? 'waitEcho' : 'running',
+                  onTurn: (turnId, state) => {
+                    if (state === 'started') activeTurnIds.set(input.sessionId, turnId);
+                    else if (activeTurnIds.get(input.sessionId) === turnId) activeTurnIds.delete(input.sessionId);
+                  },
+                })
                   .then(({ reason }) => emit({
                     type: 'session.prompt_result',
                     sessionId: input.sessionId,
-                    clientMessageId: p.clientMessageId ?? '',
+                    clientMessageId,
                     result: reason === 'completed'
                       ? { type: 'completed' }
                       : { type: 'failed', error: { message: `turn ${reason}`, code: 'dsh/turn' } },
@@ -166,11 +246,12 @@ export function createProvider() {
                   .catch((e) => emit({
                     type: 'session.prompt_result',
                     sessionId: input.sessionId,
-                    clientMessageId: p.clientMessageId ?? '',
+                    clientMessageId,
                     result: { type: 'failed', error: { message: errorMessage(e), code: 'dsh/error' } },
                   }))
                   .finally(() => {
                     if (activeTurns.get(input.sessionId) === ctl) activeTurns.delete(input.sessionId);
+                    activeTurnIds.delete(input.sessionId);
                   });
                 break;
               }
@@ -179,6 +260,66 @@ export function createProvider() {
                 const dshId = openSessions.get(input.sessionId) || input.sessionId;
                 activeTurns.get(input.sessionId)?.abort();
                 await interruptSession(dshId);
+                break;
+              }
+
+              case 'session.configure': {
+                // Paseo 的模型/思考档位变更 → DSH session/selectModel。
+                const sid = input.sessionId;
+                const dshId = openSessions.get(sid) || sid;
+                const changes = input.changes || {};
+                const cat = await loadCatalog();
+                let next = sessionModels.get(sid) ?? (await resolveSessionModel(dshId).catch(() => null));
+                let applied = false;
+                const note = (description: string, severity: 'info' | 'warning' = 'info') => emit({
+                  type: 'session.notice',
+                  sessionId: sid,
+                  notice: { id: `cfg-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, severity, title: 'DSH', description },
+                });
+
+                if (changes.model !== undefined) {
+                  if (changes.model === null) {
+                    note('DSH 会话不能清空模型，已忽略');
+                  } else {
+                    const parsed = parseModelId(changes.model);
+                    if (parsed) {
+                      next = {
+                        provider: parsed.provider,
+                        model: parsed.model,
+                        ...(next?.reasoningEffort ? { reasoningEffort: next.reasoningEffort } : {}),
+                      };
+                      applied = true;
+                    } else if (!next || changes.model !== encodeModelId(next.provider, next.model)) {
+                      // 旧版本持久化的模型 id（如 dsh-default）不再存在，保留 DSH 侧当前值
+                      note(`未知模型 id：${changes.model}，保留当前模型`);
+                    }
+                  }
+                }
+                if (changes.thinkingOption !== undefined) {
+                  if (!next) throw new Error('当前会话还没有已知模型，无法设置 reasoning effort');
+                  next = changes.thinkingOption
+                    ? { ...next, reasoningEffort: String(changes.thinkingOption) }
+                    : { provider: next.provider, model: next.model };
+                  applied = true;
+                }
+                if (changes.mode !== undefined && changes.mode !== null && changes.mode !== 'default') {
+                  note(`DSH 不支持模式切换，已忽略：${changes.mode}`);
+                }
+                if (changes.settings && Object.keys(changes.settings).length) {
+                  note(`DSH 不支持这些设置，已忽略：${Object.keys(changes.settings).join(', ')}`);
+                }
+                if (!next) throw new Error('无法确定 DSH 会话模型');
+
+                if (applied) {
+                  const r = await selectModel(dshId, next.provider, next.model, next.reasoningEffort);
+                  next = {
+                    provider: r.selected.provider,
+                    model: r.selected.model,
+                    ...(r.selected.reasoningEffort ? { reasoningEffort: r.selected.reasoningEffort } : {}),
+                  };
+                }
+                sessionModels.set(sid, next);
+                emit({ type: 'session.config', sessionId: sid, config: toProviderConfig(cat, next) });
                 break;
               }
 
@@ -195,6 +336,7 @@ export function createProvider() {
                 activeTurns.get(input.sessionId)?.abort();
                 activeTurns.delete(input.sessionId);
                 openSessions.delete(input.sessionId);
+                sessionModels.delete(input.sessionId);
                 emit({ type: 'session.closed', sessionId: input.sessionId });
                 console.error('[dsh] session.closed', input.sessionId);
                 break;
@@ -255,6 +397,37 @@ function str(v: unknown): string | undefined {
   return typeof v === 'string' && v.trim() ? v : undefined;
 }
 
+/** 已有会话读 projections.modelSelection；新会话/读不到时回落到目录默认值。 */
+async function resolveSessionModel(dshId: string): Promise<ModelRef | null> {
+  try {
+    const items = await listSessions();
+    const ref = sessionModelRef(items.find((s) => s.sessionId === dshId));
+    if (ref) return ref;
+  } catch {}
+  const cat = await loadCatalog().catch(() => null);
+  return cat?.default?.provider && cat.default.model
+    ? { provider: cat.default.provider, model: cat.default.model }
+    : null;
+}
+
+/** DSH usage chunk → Paseo ProviderUsage。
+ *  实测（2026-11-03）真实字段是 camelCase：inputTokens / cacheReadTokens / outputTokens。
+ *  早先只认 snake_case，真机上 usage 会全部丢成 undefined；两套都收。 */
+export function usageFromChunk(c: any) {
+  const u = c?.usage || c?.usageMetadata || c || {};
+  const num = (v: any) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
+  const cand = num(u.candidatesTokenCount);
+  const thought = num(u.thoughtsTokenCount);
+  const geminiOutput = cand == null && thought == null ? undefined : (cand || 0) + (thought || 0);
+  const usage = {
+    inputTokens: num(u.inputTokens) ?? num(u.input_tokens) ?? num(u.input) ?? num(u.promptTokenCount),
+    cachedInputTokens:
+      num(u.cacheReadTokens) ?? num(u.cache_read_input_tokens) ?? num(u.cachedContentTokenCount) ?? num(u.cacheRead),
+    outputTokens: num(u.outputTokens) ?? num(u.output_tokens) ?? num(u.output) ?? geminiOutput,
+  };
+  return Object.values(usage).some((v) => v != null) ? usage : null;
+}
+
 function toSummary(s: any) {
   const v = s?.projections?.values ?? {};
   return {
@@ -296,6 +469,17 @@ function toTimeline(ev: DshEvent, pending: Map<string, any>): any[] {
     if (t) out.push({ type: 'assistant_message', id: `a-${ev.seq}`, text: t });
     const r = texts(content, ['reasoning']);
     if (r) out.push({ type: 'reasoning', id: `r-${ev.seq}`, text: r });
+  } else if (ev.type === 'todo/write') {
+    const items = (Array.isArray(d.todos) ? d.todos : [])
+      .map((t: any, i: number) => ({
+        id: String(i),
+        text: String(t?.content ?? t?.text ?? ''),
+        completed: t?.status === 'completed',
+        ...(t?.status ? { status: t.status } : {}),
+      }))
+      .filter((t: any) => t.text);
+    // 固定 id：Paseo 按 id 合并，连续 todo/write 只更新同一条
+    out.push({ type: 'todo', id: 'dsh-todo', items });
   } else if (ev.type === 'tool/call') {
     pending.set(String(d.callId || ev.seq), { d, seq: ev.seq, time: ev.time });
   } else if (ev.type === 'tool/result') {
@@ -382,6 +566,9 @@ export async function runTurn(
     echoTimeoutMs?: number;
     toolTimeoutMs?: number;
     signal?: AbortSignal;
+    content?: DshPromptBlock[];
+    startPhase?: 'waitEcho' | 'running';
+    onTurn?: (turnId: string, state: string) => void;
   } = {},
 ): Promise<{ reason: string }> {
   const follow = (deps.follow || followSession)(dshId, { assistantStream: true, readyTimeoutMs: 15_000 });
@@ -430,18 +617,8 @@ export async function runTurn(
     if (!f) return;
     // usage chunk 可能不带 turn/step，先处理再进 step 守卫
     if (f.type === 'chunk' && f.chunk?.type === 'usage') {
-      const c = f.chunk;
-      const u = c.usage || c.usageMetadata || c;
-      const num = (v: any) => (typeof v === 'number' && Number.isFinite(v) ? v : undefined);
-      const usage = {
-        inputTokens: num(u.input_tokens ?? u.input ?? u.promptTokenCount),
-        cachedInputTokens: num(u.cache_read_input_tokens ?? u.cachedContentTokenCount ?? u.cacheRead),
-        outputTokens: num(u.output_tokens ?? u.output ??
-          ((u.candidatesTokenCount || 0) + (u.thoughtsTokenCount || 0))),
-      };
-      if (Object.values(usage).some((v) => v != null)) {
-        emit({ type: 'session.usage', sessionId: paseoId, usage });
-      }
+      const usage = usageFromChunk(f.chunk);
+      if (usage) emit({ type: 'session.usage', sessionId: paseoId, usage });
       return;
     }
     // chunk 帧本身不带 turn/step，只有 start 帧带；key 必须沿用 start 的值，
@@ -506,7 +683,9 @@ export async function runTurn(
           });
         }
       } else if (a.type === 'turn') {
-        emit({ type: 'session.turn', sessionId: paseoId, turnId: `dsh-turn-${a.turn ?? '?'}`, state: a.state });
+        const turnId = `dsh-turn-${a.turn ?? '?'}`;
+        deps.onTurn?.(turnId, a.state);
+        emit({ type: 'session.turn', sessionId: paseoId, turnId, state: a.state });
       } else if (a.type === 'notice') {
         notice(a.message, a.level);
       } else if (a.type === 'done') {
@@ -528,9 +707,10 @@ export async function runTurn(
       now: now(),
       echoTimeoutMs: deps.echoTimeoutMs ?? 15_000,
       budgetMs: deps.budgetMs ?? 120_000,
+      startPhase: deps.startPhase ?? 'waitEcho',
     });
     handle(state.onSnapshot(snap));
-    await (deps.prompt || promptSession)(dshId, text);
+    await (deps.prompt || promptSession)(dshId, deps.content ?? text);
 
     timer = setInterval(() => {
       const at = now();
@@ -677,22 +857,38 @@ export async function waitForUserEcho(
   return last;
 }
 
-/** 从 Paseo 的 prompt 结构里抽纯文本（实测文本在 prompt.input.content[]） */
-function extractText(prompt: any): string {
-  if (typeof prompt?.text === 'string') return prompt.text;
+/** 从 Paseo 的 prompt 结构里抽文本 + 图片块（实测文本在 prompt.input.content[]）。
+ *  Paseo 的图片是 {type:'image', data, mimeType}，DSH 的字段叫 mediaType（真机验证）。
+ *  其余附件类型降级成一行文本说明，至少不丢。 */
+function extractContent(prompt: any): { blocks: DshPromptBlock[]; text: string } {
   const parts =
     prompt?.input?.content ?? prompt?.content ?? prompt?.message?.content ?? prompt?.blocks ?? [];
-  if (!Array.isArray(parts)) return '';
-  const raw = parts
-    .filter((b: any) => b && (b.type === 'text' || b.type === 'plain_text') && typeof b.text === 'string')
-    .map((b: any) => b.text)
-    .join('\n');
+  const rawText: string[] = [];
+  const blocks: DshPromptBlock[] = [];
+  if (typeof prompt?.text === 'string') {
+    rawText.push(prompt.text);
+  } else if (Array.isArray(parts)) {
+    for (const b of parts) {
+      if (!b || typeof b !== 'object') continue;
+      if ((b.type === 'text' || b.type === 'plain_text') && typeof b.text === 'string') {
+        rawText.push(b.text);
+      } else if (b.type === 'image' && typeof b.data === 'string') {
+        blocks.push({ type: 'image', data: b.data, mediaType: b.mimeType || b.mediaType || 'image/png' });
+      } else if (b.type) {
+        const label = b.fileName || b.title || b.name || b.url || b.id || '';
+        blocks.push({ type: 'text', text: `[附件:${b.type}] ${label}`.trim() });
+      }
+    }
+  }
   // 去掉 Paseo 注入的 <paseo-system …>…</paseo-system> 包装，只留用户真正说的话
-  return raw
+  const text = rawText
+    .join('\n')
     .replace(/<\/?paseo-system[^>]*>/g, '')
     .replace(/<[^>]+>/g, '')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
+  if (text) blocks.unshift({ type: 'text', text });
+  return { blocks, text };
 }
 
 

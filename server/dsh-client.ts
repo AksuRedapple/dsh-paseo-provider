@@ -8,21 +8,24 @@
  */
 import zlib from 'node:zlib';
 
-const BASE = process.env.DSH_BASE || 'http://127.0.0.1:8781';
+// 运行期读取：测试会给每个用例换 mock 端口
+const base = () => process.env.DSH_BASE || 'http://127.0.0.1:8781';
 
 export async function rpc<T = any>(
   method: string,
   args: Record<string, unknown> = {},
-  wrap: '_request' | 'request' = '_request',
+  // 实测：不同端点的参数包装不一样 —— session/list 用 _request，session/create /
+  // session/prompt / session/selectModel 用 request，session/modelCatalog 裸参数（无包装）。
+  wrap: '_request' | 'request' | 'none' = '_request',
   timeoutMs = 30_000,
 ): Promise<T> {
   const body = {
     type: 'client-request',
     rpcId: `p${Date.now()}`,
     method,
-    payload: { args: { [wrap]: args } },
+    payload: { args: wrap === 'none' ? args : { [wrap]: args } },
   };
-  const res = await fetch(`${BASE}/api/${method}`, {
+  const res = await fetch(`${base()}/api/${method}`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', 'accept-encoding': 'br' },
     body: JSON.stringify(body),
@@ -55,13 +58,46 @@ export interface DshSession {
   running: boolean;
   blank: boolean;
   cwd: string | null;
-  projections?: { values?: { title?: string; goal?: string | null } };
+  projections?: {
+    values?: {
+      title?: string;
+      goal?: string | null;
+      modelSelection?: { lastUsed?: DshModelRef | null; next?: DshModelRef | null };
+      contextPressure?: { pressureTokens?: number; projectedTokens?: number; contextWindow?: number };
+      tokenUsage?: { uncachedInputTokens?: number; outputTokens?: number; cacheReadTokens?: number };
+    };
+  };
+}
+
+export interface DshModelRef {
+  provider: string;
+  model: string;
+  reasoningEffort?: string;
+}
+
+export interface DshReasoningEffort {
+  id: string;
+  name: string;
+  description?: string;
+}
+
+export interface DshCatalogModel {
+  id: string;
+  name: string;
+  description?: string;
+  reasoning?: { efforts?: DshReasoningEffort[]; defaultEffort?: string };
+}
+
+export interface DshModelCatalog {
+  default?: DshModelRef;
+  routableProviders?: string[];
+  groups?: Array<{ id: string; name: string; models?: DshCatalogModel[] }>;
 }
 
 /** 轻量探活：DSH 8781 根路径；>=500 或网络错误视为不可用。 */
 export async function probeDsh(timeoutMs = 1500): Promise<{ ok: boolean; diagnostic?: string }> {
   try {
-    const res = await fetch(`${BASE}/`, { signal: AbortSignal.timeout(timeoutMs) });
+    const res = await fetch(`${base()}/`, { signal: AbortSignal.timeout(timeoutMs) });
     if (res.status >= 500) return { ok: false, diagnostic: `DSH upstream HTTP ${res.status}` };
     return { ok: true };
   } catch (e) {
@@ -75,13 +111,28 @@ export async function listSessions(): Promise<DshSession[]> {
 }
 
 
-/** 发一条用户消息（2026-11-02 从 DSH Web 实际请求抄下的形状）。 */
-export async function promptSession(sessionId: string, text: string, mode: 'queue' | 'steer' = 'queue'): Promise<any> {
+export type DshPromptBlock = {
+  type: 'text';
+  text: string;
+} | {
+  type: 'image';
+  data: string;
+  mediaType: string;
+};
+
+/** 发一条用户消息。content 可以是纯文本，也可以是 text/image 块数组。
+ *  实测：图片块的字段是 mediaType（不是 mimeType），2026-11-03 gateway 校验通过。 */
+export async function promptSession(
+  sessionId: string,
+  content: string | DshPromptBlock[],
+  mode: 'queue' | 'steer' = 'queue',
+): Promise<any> {
+  const blocks = typeof content === 'string' ? [{ type: 'text' as const, text: content }] : content;
   return rpc('session/prompt', {
     requestId: crypto.randomUUID(),
     sessionId,
     mode,
-    content: [{ type: 'text', text }],
+    content: blocks,
     clientTimeZone: 'Asia/Shanghai',
   } as any, 'request');
 }
@@ -96,4 +147,21 @@ export async function createSession(cwd: string): Promise<string> {
 /** 中断当前 turn（DSH 的接口名是 session/cancel，不是 interrupt）。 */
 export async function interruptSession(sessionId: string): Promise<void> {
   await rpc('session/cancel', { sessionId } as any, 'request', 10_000);
+}
+
+/** DSH 模型目录：按 provider 分组，default 指向当前默认模型。 */
+export async function modelCatalog(): Promise<DshModelCatalog> {
+  return rpc<DshModelCatalog>('session/modelCatalog', {}, 'none', 10_000);
+}
+
+/** 切换会话模型；reasoningEffort 可选（实测会被原样接受并回显在 selected 里）。 */
+export async function selectModel(
+  sessionId: string,
+  provider: string,
+  model: string,
+  reasoningEffort?: string,
+): Promise<{ selected: DshModelRef }> {
+  const args: Record<string, unknown> = { sessionId, provider, model };
+  if (reasoningEffort) args.reasoningEffort = reasoningEffort;
+  return rpc('session/selectModel', args, 'request', 10_000);
 }
