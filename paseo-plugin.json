@@ -1,6 +1,8 @@
 {
   "id": "dsh-provider",
   "name": "DSH",
+  "description": "Paseo providers for DeepSeek Harness (WS mux + ACP) with persistent streaming and model switching.",
   "media": [],
-  "requirements": { "paseo": ">=0.14.0" }
+  "requirements": { "paseo": ">=0.14.0" },
+  "build": [["npm", "ci", "--omit=dev", "--ignore-scripts"]]
 }

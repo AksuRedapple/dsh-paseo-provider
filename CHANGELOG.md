@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.1 — 2026-11-03
+
+Plugin registry packaging.
+
+- Add `description` and a declared `build` step (`npm ci --omit=dev --ignore-scripts`) to `paseo-plugin.json`; Git installs now install the runtime dependency (`@getpaseo/plugin`) from the committed lockfile.
+- Replace the listing text with an English `OVERVIEW.md` covering purpose, setup, capabilities, data access, permissions and limitations.
+
 ## 1.0.0 — 2026-11-03
 
 首个开源版本。

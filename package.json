@@ -1,6 +1,6 @@
 {
   "name": "dsh-paseo-provider",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": false,
   "description": "Paseo providers for DeepSeek Harness: persistent WS mux streaming client + ACP adapter, with a shared turn state machine.",
   "license": "MIT",
