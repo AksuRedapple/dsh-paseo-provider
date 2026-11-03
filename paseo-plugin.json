@@ -1,0 +1,6 @@
+{
+  "id": "dsh-provider",
+  "name": "DSH",
+  "media": [],
+  "requirements": { "paseo": ">=0.14.0" }
+}

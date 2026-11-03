@@ -1,0 +1,9 @@
+node_modules/
+*.bak-*
+.test-last.json
+.DS_Store
+
+# 本机工作与课堂交接材料，不随开源仓库发布
+forge/
+STATUS.md
+JOURNAL.md

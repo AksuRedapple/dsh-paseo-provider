@@ -1,0 +1,36 @@
+{
+  "name": "dsh-paseo-provider",
+  "version": "1.0.0",
+  "private": false,
+  "description": "Paseo providers for DeepSeek Harness: persistent WS mux streaming client + ACP adapter, with a shared turn state machine.",
+  "license": "MIT",
+  "files": [
+    "paseo-plugin.json",
+    "OVERVIEW.md",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE",
+    "index.server.ts",
+    "acp-server.mjs",
+    "server/",
+    "docs/",
+    "icon.svg",
+    "check.sh"
+  ],
+  "scripts": {
+    "test": "bash tools/tests/run_all.sh tools/tests --fast --quiet",
+    "typecheck": "tsc --noEmit",
+    "check": "./check.sh"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "@getpaseo/plugin": "0.14.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "typescript": "^5.9.3",
+    "ws": "^8.22.1"
+  }
+}
