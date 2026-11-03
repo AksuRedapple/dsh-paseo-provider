@@ -52,6 +52,7 @@ inspector: source state exceeds the source-frame byte limit
 这是 `dsh-experimental-inspector` 的问题（实测 0.2.1-rc.5 桌面 + rc.3 runtime 组合）。处理方式：
 
 - 回退桌面版到与 runtime 匹配的版本，或升级 runtime/等待上游修复；
+- 本机实测 workaround（2026-11-03）：备份 `~/.dsh/profiles/desktop/package.json`，从 `dsh.profile.bundles` 移除 `@deepseek-ai/dsh-experimental-inspector-profile`，再跑 `~/bin/dsh-start.sh`；8780 恢复、inspector 不再崩溃；
 - 不要通过改 provider 绕过：DSH 后端没起时 provider 只能报 unavailable。
 
 ## 6. 收集证据
