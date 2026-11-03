@@ -36,6 +36,22 @@ export async function startMockDsh(onPrompt, opts = {}) {
     let body = '';
     req.on('data', (d) => { body += d; });
     req.on('end', () => {
+      // 可选：模拟 DSH 的 launch token → cookie 交换与鉴权
+      if (opts.requireCookie) {
+        const url = String(req.url || '');
+        if (url.startsWith('/?token=')) {
+          res.setHeader('set-cookie', `${opts.requireCookie}; Path=/`);
+          res.statusCode = 302;
+          res.setHeader('location', '/');
+          res.end();
+          return;
+        }
+        if (req.headers.cookie !== opts.requireCookie) {
+          res.statusCode = 401;
+          res.end('unauthorized');
+          return;
+        }
+      }
       const method = String(req.url || '').replace(/^\/api\//, '');
       let args = {};
       try {
@@ -64,7 +80,11 @@ export async function startMockDsh(onPrompt, opts = {}) {
     });
   });
   const wss = new WebSocketServer({ server });
-  wss.on('connection', (ws) => {
+  wss.on('connection', (ws, req) => {
+    if (opts.requireCookie && req.headers.cookie !== opts.requireCookie) {
+      ws.close(1008, 'unauthorized');
+      return;
+    }
     currentWs = ws;
     ws.on('message', (raw) => {
       let m;

@@ -26,7 +26,7 @@ import { readFileSync } from 'node:fs';
 // 原生 ESM 要求扩展名，这里用 Node 内置的同步解析钩子补 .ts，不引入任何依赖。
 registerHooks({
   resolve(specifier, context, nextResolve) {
-    if (/^\.{1,2}\//.test(specifier) && extname(specifier) === '') {
+    if (/^\.{1,2}\//.test(specifier) && extname(specifier) === '' && !String(context.parentURL || '').includes('/node_modules/')) {
       return nextResolve(`${specifier}.ts`, context);
     }
     return nextResolve(specifier, context);

@@ -2,14 +2,18 @@
 
 ## 1. `paseo provider ls` 显示 `dsh` unavailable
 
-`status()` 会对 DSH 做真实探活。看到 unavailable 时：
+`status()` 会对 DSH 做真实探活。先看插件日志里的端点来源：
 
 ```bash
-curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8781/
+paseo plugin logs dsh-provider | grep "endpoint"
+# [dsh] endpoint discovered http://127.0.0.1:8780   ← 日志 token 换 cookie 成功
+# [dsh] endpoint legacy-fallback http://127.0.0.1:8781
 ```
 
-- 502 / 连接失败：DSH 后端没起。先确认 `127.0.0.1:8780` 在监听，再按你的 DSH 安装方式启动。
-- 200：重新 `paseo plugin reload dsh-provider`，再看 `paseo plugin logs dsh-provider`。
+- 没有 `endpoint discovered`：确认 DSH 桌面版在运行，且 `~/Library/Logs/DeepSeek Harness/dsh-web.log` 有 `dsh web: http://...?token=...`；必要时设 `DSH_WEB_LOG`。
+- `legacy-fallback` 且 8781 不通：DSH 后端没起，或本机没有自建代理；官方通道可设 `DSH_BASE`/`DSH_MUX` 兜底。
+- `authentication failed`：token 已过期（DSH 重启过），reload 插件会重新读取日志并换 cookie。
+- 200 / 连接正常：重新 `paseo plugin reload dsh-provider`，再看日志。
 
 ## 2. 插件加载失败 / 改动不生效
 

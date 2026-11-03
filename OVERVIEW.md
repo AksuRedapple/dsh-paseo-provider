@@ -13,7 +13,7 @@ An optional second ACP provider, `dsh-acp-official`, launches the official `dsh 
 ## Setup
 
 - Paseo 0.14 or newer.
-- DSH desktop 0.2.1-rc.x running on the same machine, reachable at `127.0.0.1:8781` (the plugin reads `DSH_BASE` and `DSH_MUX` if a different local endpoint is used).
+- DSH desktop 0.2.1-rc.x running on the same machine. The plugin reads the launch token from the local DSH web log, exchanges it for an auth cookie, and connects to `127.0.0.1:8780`; `DSH_BASE`, `DSH_MUX`, `DSH_COOKIE` and `DSH_WEB_LOG` override the discovery.
 - The optional official ACP mode needs the `dsh` CLI (found automatically in the desktop app or on `PATH`) and pays a longer cold start because it lists models at startup.
 - DSH login is handled by DSH itself; the plugin does not store or request accounts or tokens.
 - The default ACP provider starts `acp-server.mjs` with the Node.js runtime of the Paseo daemon.
@@ -29,7 +29,7 @@ An optional second ACP provider, `dsh-acp-official`, launches the official `dsh 
 
 ## Data access
 
-The plugin connects only to the local DSH endpoint (`127.0.0.1:8781` by default). It reads DSH session data and sends prompts, images, model selections and cancellation requests to DSH. Prompts and tool results are processed and stored by DSH, and are forwarded by DSH to the model providers configured inside DSH; the plugin adds no external services, telemetry, or analytics. No credentials are read beyond the optional local endpoint environment variables.
+The plugin connects only to the local DSH endpoint. When `DSH_BASE`/`DSH_MUX` are not set it reads the local DSH web log for a launch token, exchanges the token for an auth cookie on loopback, and uses that cookie for HTTP and WebSocket requests; the cookie stays in memory and is not logged or sent anywhere else. It reads DSH session data and sends prompts, images, model selections and cancellation requests to DSH. Prompts and tool results are processed and stored by DSH, and are forwarded by DSH to the model providers configured inside DSH; the plugin adds no external services, telemetry, or analytics.
 
 ## Permissions
 

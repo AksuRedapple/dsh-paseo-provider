@@ -23,7 +23,7 @@
 - **基础交互对齐官方 provider**：支持图片 prompt（转成 DSH 的 `mediaType`）、运行中 steer 插话（DSH `mode:'steer'`）、`todo/write` → 时间线任务列表（ACP 为 `plan`）。
 - **上下文不污染时间线**：DSH 注入的 system-reminder / ssot-context / 时间戳等 user/message 按 `source.kind` 过滤。
 - **失败面显式化**：seq 重置、快照截断、未知事件、工具无结果、连接中断都会变成可见的 notice/日志。
-- **测试**：39 条测试（12 个测试文件），见 `docs/VERIFICATION.md`。
+- **测试**：45 条测试（13 个测试文件），见 `docs/VERIFICATION.md`。
 
 ## Provider 契约覆盖
 
@@ -90,7 +90,7 @@ dsh-acp-official  官方 dsh --profile acp ── stdio ACP ── Paseo（opt-i
 
 ## 快速开始
 
-要求：Node.js ≥ 22、本机可访问 DSH（默认 `127.0.0.1:8781`）、Paseo daemon ≥ 0.14。
+要求：Node.js ≥ 22、DSH 桌面版正在运行、Paseo daemon ≥ 0.14。插件会从 DSH 的 `dsh-web.log` 读取 launch token 并换取 `dsh-auth` cookie，自动连到 `127.0.0.1:8780`，不需要自建代理；找不到日志时才回退 `127.0.0.1:8781`。
 
 ```bash
 npm install
@@ -108,8 +108,9 @@ paseo provider ls          # 应看到 dsh / dsh-acp available
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `DSH_BASE` | `http://127.0.0.1:8781` | HTTP RPC 地址 |
-| `DSH_MUX` | `ws://127.0.0.1:8781/api/remote.mux` | mux 地址 |
+| `DSH_WEB_LOG` | 平台日志路径 | DSH web 日志（token 来源）；macOS 默认 `~/Library/Logs/DeepSeek Harness/dsh-web.log` |
+| `DSH_BASE` / `DSH_MUX` | 自动发现 | 显式覆盖端点（设置后不再读日志） |
+| `DSH_COOKIE` | 自动交换 | 显式 `dsh-auth-*` cookie；跳过 token 交换 |
 | `DSH_DEFAULT_CWD` | `$HOME` | 新建会话的默认 cwd |
 | `DSH_TITLE_CONCURRENCY` | `8` | 列表补标题的并发上限 |
 | `DSH_ACP_REPLAY_CHUNK` | `50` | ACP `session/load` 每批通知数 |

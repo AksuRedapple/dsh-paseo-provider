@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.2.0 — 2026-11-03
+
+WS endpoint discovery; no local proxy required.
+
+- New `server/dsh-endpoint.mjs`: read the DSH web log, exchange the launch token for the `dsh-auth-*` cookie, and connect to `127.0.0.1:8780`. Falls back to the old `8781` endpoint only when no log/token exists.
+- HTTP and WebSocket requests carry the cookie; `ws` is now a runtime dependency.
+- 401/403 clears the endpoint cache and retries once, so a DSH restart is picked up automatically.
+- Env overrides: `DSH_WEB_LOG`, `DSH_COOKIE`, plus the existing `DSH_BASE`/`DSH_MUX`.
+- Tests: log parsing, cookie exchange, cache invalidation, and a cookie-authenticated mock DSH end-to-end.
+
 ## 1.1.0 — 2026-11-03
 
 Official ACP channel, opt-in.

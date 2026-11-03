@@ -8,9 +8,9 @@
 
 ```bash
 ./check.sh
-# ▸ tests 共 12 个测试（fast）
+# ▸ tests 共 13 个测试（fast）
 # ▸ 结果: pass=11 fail=0
-# node --test: 39 / pass 39 / fail 0
+# node --test: 45 / pass 45 / fail 0
 # 干净目录 npm ci → check.sh 通过（Node 26 / Node 24）；Node 22.23.4 直跑通过
 ```
 
@@ -145,6 +145,17 @@ ACP 路径（`acp-server.mjs` + stdio JSON-RPC）：
 | Paseo 建 ACP agent | 单次 64s；同 workspace 第二个 agent 96s（每次 spawn 一个新进程） |
 | Paseo discovery | 默认 10s 超时会误判 `did not initialize`；改用 `startupTimeoutMs=120s` + `workspaceOnlyCatalog` 后稳定 |
 | 结论 | 官方通道能力更全（permissions/MCP/resume），但冷启动成本高 → 保留为 `DSH_ACP_MODE=official|both` 的 opt-in，默认仍用手写适配器 |
+
+### WS 端点/鉴权自动发现（真机）
+
+| 场景 | 结果 |
+|---|---|
+| 日志解析 | `dsh web: http://127.0.0.1:8780/?token=...` → 端口 8780；多行取最后一条 |
+| token → cookie | 请求 `127.0.0.1:8780/?token=...`，取 `dsh-auth-<hash>` 整对保留 |
+| Paseo daemon | reload 后日志显示 `[dsh] endpoint discovered http://127.0.0.1:8780`，不再依赖自建 8781 代理 |
+| WS 实跑 | `paseo agent run --provider dsh` 完成；HTTP 与 mux 都走 8780 + cookie |
+| 单测 | `endpoint-6`：cookie 鉴权的 mock（HTTP 401 + WS 1008）端到端通过 |
+| 失效恢复 | 401/403 会清缓存并重新读日志换 cookie 重试一次 |
 
 ## 7. 未覆盖 / 局限
 

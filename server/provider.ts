@@ -10,6 +10,7 @@
 import { listSessions, promptSession, createSession, interruptSession, probeDsh, modelCatalog, selectModel } from './dsh-client';
 import type { DshModelCatalog, DshPromptBlock } from './dsh-client';
 import { fetchSessionRecords, followSession, type DshEvent } from './dsh-ws';
+import { getDshEndpoint } from './dsh-endpoint.mjs';
 import { createTurnState } from './turn-state.mjs';
 import {
   catalogDefaults,
@@ -571,7 +572,12 @@ export async function runTurn(
     onTurn?: (turnId: string, state: string) => void;
   } = {},
 ): Promise<{ reason: string }> {
-  const follow = (deps.follow || followSession)(dshId, { assistantStream: true, readyTimeoutMs: 15_000 });
+  const ep = await getDshEndpoint().catch(() => null);
+  const follow = (deps.follow || followSession)(dshId, {
+    assistantStream: true,
+    readyTimeoutMs: 15_000,
+    ...(ep ? { url: ep.mux, ...(ep.cookie ? { headers: { cookie: ep.cookie } } : {}) } : {}),
+  });
   const now = deps.now || Date.now;
   const pending = new Map<string, any>();
   const notices = new Set<string>();

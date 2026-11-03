@@ -7,9 +7,7 @@
  *  3. 去掉压缩后是普通 JSON：{ type:"server-response", result:{ ok, value } }
  */
 import zlib from 'node:zlib';
-
-// 运行期读取：测试会给每个用例换 mock 端口
-const base = () => process.env.DSH_BASE || 'http://127.0.0.1:8781';
+import { getDshEndpoint, clearDshEndpointCache } from './dsh-endpoint.mjs';
 
 export async function rpc<T = any>(
   method: string,
@@ -25,12 +23,27 @@ export async function rpc<T = any>(
     method,
     payload: { args: wrap === 'none' ? args : { [wrap]: args } },
   };
-  const res = await fetch(`${base()}/api/${method}`, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', 'accept-encoding': 'br' },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(timeoutMs),
-  });
+  let res: Response | undefined;
+  for (let attempt = 0; attempt < 2; attempt++) {
+    const ep = await getDshEndpoint({ force: attempt > 0 });
+    res = await fetch(`${ep.base}/api/${method}`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        'accept-encoding': 'br',
+        ...(ep.cookie ? { cookie: ep.cookie } : {}),
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    // token 随 DSH 重启变化：认证失败时强制刷新一次端点缓存
+    if ((res.status === 401 || res.status === 403) && attempt === 0) {
+      clearDshEndpointCache();
+      continue;
+    }
+    break;
+  }
+  if (!res) throw new Error(`DSH rpc ${method} failed: no response`);
   const buf = Buffer.from(await res.arrayBuffer());
   let text: string;
   try {
@@ -94,10 +107,17 @@ export interface DshModelCatalog {
   groups?: Array<{ id: string; name: string; models?: DshCatalogModel[] }>;
 }
 
-/** 轻量探活：DSH 8781 根路径；>=500 或网络错误视为不可用。 */
+/** 轻量探活：DSH 根路径；>=500 或网络错误视为不可用，401/403 给出认证诊断。 */
 export async function probeDsh(timeoutMs = 1500): Promise<{ ok: boolean; diagnostic?: string }> {
   try {
-    const res = await fetch(`${base()}/`, { signal: AbortSignal.timeout(timeoutMs) });
+    const ep = await getDshEndpoint();
+    const res = await fetch(`${ep.base}/`, {
+      signal: AbortSignal.timeout(timeoutMs),
+      ...(ep.cookie ? { headers: { cookie: ep.cookie } } : {}),
+    });
+    if (res.status === 401 || res.status === 403) {
+      return { ok: false, diagnostic: `DSH reachable but authentication failed (${ep.source}); restart the desktop app or set DSH_COOKIE` };
+    }
     if (res.status >= 500) return { ok: false, diagnostic: `DSH upstream HTTP ${res.status}` };
     return { ok: true };
   } catch (e) {

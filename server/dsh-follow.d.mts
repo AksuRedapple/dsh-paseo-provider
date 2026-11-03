@@ -26,6 +26,7 @@ export type FollowMessage =
 
 export interface FollowOptions {
   url?: string;
+  headers?: Record<string, string>;
   maxMessages?: number;
   assistantStream?: boolean;
   reconnect?: boolean;

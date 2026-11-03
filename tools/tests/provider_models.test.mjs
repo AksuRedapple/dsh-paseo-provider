@@ -6,7 +6,7 @@ import { startMockDsh } from './mock-dsh.mjs';
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
-    if (/^\.{1,2}\//.test(specifier) && extname(specifier) === '') {
+    if (/^\.{1,2}\//.test(specifier) && extname(specifier) === '' && !String(context.parentURL || '').includes('/node_modules/')) {
       return nextResolve(`${specifier}.ts`, context);
     }
     return nextResolve(specifier, context);
