@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.0.2 — 2026-11-03
+
+Registry listing name and positioning.
+
+- Manifest name: `DeepSeek Harness (WS + ACP)` so the listing is distinguishable from the existing native-provider plugin.
+- Manifest description and overview state the boundary: stock DSH desktop app, no DSH profile changes, Paseo plugin reload only.
+
 ## 1.0.1 — 2026-11-03
 
 Plugin registry packaging.

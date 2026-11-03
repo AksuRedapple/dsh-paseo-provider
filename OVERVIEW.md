@@ -1,6 +1,8 @@
-# DSH
+# DeepSeek Harness (WS + ACP)
 
 Paseo providers for DeepSeek Harness (DSH), a desktop agent harness. The plugin adds two providers: a WebSocket provider backed by DSH's session stream, and an ACP provider for clients that prefer the Agent Client Protocol.
+
+The plugin works with the stock DSH desktop app. It does not install a DSH profile plugin, does not edit anything under `~/.dsh`, and needs only a Paseo plugin reload; the other approach to this integration adds a bridge inside DSH and requires a daemon restart.
 
 ## How it works
 
