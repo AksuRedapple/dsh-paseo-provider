@@ -1,16 +1,16 @@
 # VERIFICATION — 验证记录
 
 > 日期：2026-11-03 ｜ 环境：macOS (Apple Silicon) · Node 26 · Paseo 0.14 · 本地 DSH
-> 兼容性：Node 22.23.4 / 24.22.1 / 26.12.1 均实跑通过（34 条测试；22/24 用干净目录 `npm ci` 后运行）。
+> 兼容性：Node 22.23.4 / 24.22.1 / 26.12.1 均实跑通过（36 条测试；22/24 用干净目录 `npm ci` 后运行）。
 > 所有数字来自实际运行，不是估算。个人信息已脱敏。
 
 ## 1. 单测
 
 ```bash
 ./check.sh
-# ▸ tests 共 13 个测试（fast）
-# ▸ 结果: pass=11 fail=0
-# node --test: 47 / pass 47 / fail 0
+# ▸ tests 共 8 个测试（fast）
+# ▸ 结果: pass=8 fail=0
+# node --test: 36 / pass 36 / fail 0
 # 干净目录 npm ci → check.sh 通过（Node 26 / Node 24）；Node 22.23.4 直跑通过
 ```
 
@@ -33,17 +33,12 @@
 | run-4 | reasoning/text 预览发出，最终 assistant/message 同 step 去重 |
 | run-5 | usage chunk → session.usage（input/cached/output） |
 | client-1..3 | 非 JSON 上游错误可读、探活 5xx/200 |
-| acp-1..5 | user/assistant/tool_call/tool_call_update 映射与 prompt 文本拼接 |
-| acp-mock | mock DSH（HTTP+WS）跑完整 prompt：文本只出现一次、tool_call/tool_call_update 生命周期 |
 | provider-mock | mock DSH 跑完整 WS provider：tool_call、文本去重、usage、session.turn completed |
 | provider-lifecycle | can_stop_runtime → interrupt 取消；session.close 取消并 closed |
 | provider-contract | sessions 标题补全、history replay、`session.configure` 返回 config 快照、unsupported 输入显式失败 |
-| acp-load | session/load 回放 user/assistant，响应在 updates 之后，并带 configOptions |
 | provider-models | 目录按 provider 分组、`session.open` 同步当前模型、`session.configure` → `selectModel`、旧模型 id 保留并提示 |
 | usage 映射 | 真机 camelCase（inputTokens/cacheReadTokens/outputTokens）与旧版 snake_case 都能映射 |
-| acp-config | `configOptions`（model / thought_level）、`set_config_option` 生效、`usage_update`（used=8 / size=1e6） |
 | provider-capabilities | 图片 prompt → DSH `mediaType`；todo/write → `todo` 项；steer 插话回与当前轮一致的 `turnId` |
-| acp-mock（增补） | 图片 prompt 透传、`todo/write` → `plan`、`promptCapabilities.image=true` |
 
 ## 2. 真机（Paseo → dsh provider）
 
@@ -60,7 +55,6 @@
 | can_stop / close | `can_stop_runtime=true`；`session.close` → `session.closed`，运行中的轮次被取消 |
 | 未实现输入 | 返回 `request.failed` + `dsh/unsupported`，不再静默 `request.completed` |
 | **最终 v1.0 回归** | `FINAL-OK`、`SLOW-FINAL`（sleep 8）、`ALPHA-FINAL`/`BRAVO-FINAL` 并发零串扰、interrupt → `turn canceled` |
-| **最终 ACP 回归** | `ACP-TOOL` 实时 tool_call/tool_call_update、cancel `cancelled`、Paseo `--provider dsh-acp` 回复 `ACP-FINAL` |
 
 > 最终回归（2026-11-03 12:31）：DSH 桌面 0.2.1-rc.5 启动崩溃（inspector），改用 `dsh-desktop-host` 子进程直接拉起 8780（临时绕过，不改 DSH 配置）；provider 侧完成上述真机回归。
 
@@ -76,15 +70,9 @@
 
 结论：持久 follow 每轮只增加约 2 条稳定连接；没有旧实现「每 1.2s 新建一条 WS」的 churn。网页版 DSH 与插件共用同一服务，但插件负载在本次采样中可忽略。
 
-## 4. ACP
+## 4. ACP（2.0.0 已移除）
 
-| 场景 | 结果 |
-|---|---|
-| `session/load` 长会话 | 354 events → 113 updates，`session/update` 全部发完后才回响应 |
-| 两轮 prompt | turn1 `["收到"]`、turn2 `["好的"]`；第二轮没有重放第一轮 |
-| 实时工具 | `tool_call` pending → `tool_call_update` completed（同一 toolCallId），文本随后到达 |
-| cancel | 运行 `sleep 60` 时发 `session/cancel` → `stopReason: "cancelled"` |
-| 分段参数 | 每 50 条 `session/update` 等 stdout drain 并让出事件循环 |
+ACP provider、手写 `acp-server.mjs` 与官方 `--profile acp` 通道已在 2.0.0 移除；历史验证记录保留在 tag `v1.3.0`。
 
 ## 5. 模型目录 / 切换 / usage（2026-11-03 增补，真机）
 
@@ -97,16 +85,6 @@ WS 路径（`server/provider.ts` 直连本机 DSH）：
 | `session.configure` | `{model: deepseek-official::deepseek-v4-pro, thinkingOption: low}` → DSH `session/selectModel` 成功，`session.config` 回显 `low` |
 | prompt | `只回复 USAGE-OK` → `completed`，正文 `USAGE-OK`，usage `{inputTokens:26592, cachedInputTokens:0, outputTokens:5}`（camelCase 已映射） |
 | interrupt | 长文 prompt 运行中中止 → `turn canceled` |
-
-ACP 路径（`acp-server.mjs` + stdio JSON-RPC）：
-
-| 场景 | 结果 |
-|---|---|
-| `session/new` | `configOptions`：model（7 项，current `deepseek-official::deepseek-v4-pro`）+ reasoning_effort（current `high`） |
-| `set_config_option(model)` | 切到 `deepseek-official::deepseek-flash`；DSH 侧真写回 |
-| `set_config_option(reasoning_effort)` | 切到 `max`；响应 `configOptions.currentValue = max` |
-| prompt | `只回复 ACP-OK` → `end_turn`，正文 `ACP-OK`，`usage_update {used:26607, size:1048576}` |
-| `session/load` | 返回 `configOptions`：model=`deepseek-flash`、effort=`max`（`modelSelection` 带回了 effort） |
 
 基础能力（真机）：
 
@@ -127,24 +105,6 @@ ACP 路径（`acp-server.mjs` + stdio JSON-RPC）：
 | WS 多轮 | 第二轮追加 `world` → 文件为 `hello world`，历史只出现一次、无重放 |
 | WS 中断 | 3000 字长任务运行 5s 后 interrupt → `INTERRUPTED`、状态 idle，随后 `ALIVE-OK` 正常 |
 | WS usage | `LastUsage {input:137, output:3, cached:27264}` |
-| ACP 文件任务 | `创建 acp.txt → cat → ACP-FILE-OK`：文件落盘、`[Write]`/`[Bash]` 工具卡、回复正确 |
-| ACP 多轮 | 第二轮 `ACP-ALIVE` 正常，历史无重放 |
-| ACP 图片 | Paseo `--image` 1×1 PNG → `ACP-IMG-OK`，`session/prompt` 收到 image block |
-| ACP 模型切换（UI） | composer 选 `DeepSeek-V4-Pro · DeepSeek` → Paseo 发 `session/set_config_option`，currentValue 更新 |
-| ACP 工具卡（修复后） | `rawInput {filePath, content}` / `rawOutput "ok"` 进入 wire；单测 `acp-3/4` 锁定 |
-
-发现的限制：Paseo 注入的 MCP servers 不会进入 DSH（两个 provider 都只暴露 DSH 自身工具）。
-
-### 官方 ACP 通道（opt-in，真机）
-
-| 场景 | 结果 |
-|---|---|
-| CLI 发现 | 桌面版内置 `/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh`，`--version` = 0.2.1-rc.5 |
-| `initialize` | 30s（冷启动会拉 `api.deepseek.com` 模型列表）；返回 `mcpCapabilities.http: true`、`sessionCapabilities: list/resume` |
-| `session/new` | 再 +6s，返回分组模型 configOptions |
-| Paseo 建 ACP agent | 单次 64s；同 workspace 第二个 agent 96s（每次 spawn 一个新进程） |
-| Paseo discovery | 默认 10s 超时会误判 `did not initialize`；改用 `startupTimeoutMs=120s` + `workspaceOnlyCatalog` 后稳定 |
-| 结论 | 官方通道能力更全（permissions/MCP/resume），但冷启动成本高 → 保留为 `DSH_ACP_MODE=official|both` 的 opt-in，默认仍用手写适配器 |
 
 ### WS 端点/鉴权自动发现（真机）
 
@@ -171,8 +131,8 @@ ACP 路径（`acp-server.mjs` + stdio JSON-RPC）：
 
 - seq 重置只有单测与恢复策略，没有真实 DSH 重启样本。
 - 快照窗口固定（实测 `maxMessages` 调到 2000 仍是 342 条、`hasMore=true`）；超长历史会截断（有 notice）。
-- `session.revert` / `archive` / `unarchive` 未实现（DSH 无对应端点，显式 `request.failed`）；`prompt.command`（DSH 没有命令注册 RPC）两个 ACP 模式都不支持。
-- 默认 `dsh-acp` 没有 permission 桥接与 MCP；官方 `dsh-acp-official`（`DSH_ACP_MODE=official|both`）提供 permissions/MCP/session resume，但冷启动 30–90s，且不支持 plan/历史回放。
+- `session.revert` / `archive` / `unarchive` 未实现（DSH 无对应端点，显式 `request.failed`）；`prompt.command`、权限审批、MCP 未做。
+- 只支持 DSH 桌面版在运行；无 ACP / CLI / 无头模式（ACP 变体见 tag `v1.3.0`）。
 - 仅 2 个并发会话做过真机；更高并发未压测。
 - 只在 macOS + Node 26 验证；CI 矩阵为 Node 22/24（尚未在 GitHub 实跑）。
 - 最终真机回归已完成（见 §2），但 DSH 桌面 0.2.1-rc.5 仍会在启动时 inspector 崩溃；本次通过直接拉起 desktop-host 子进程完成验证，桌面壳需等上游修复或回退 rc.3。

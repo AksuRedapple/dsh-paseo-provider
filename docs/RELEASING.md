@@ -20,7 +20,7 @@ cd ~/qoder_place/dsh-provider
 git init
 git add .
 git status          # 确认没有 forge/ STATUS.md JOURNAL.md node_modules *.bak-*
-git commit -m "feat: DSH providers for Paseo (WS + ACP) with persistent streaming"
+git commit -m "feat: DSH desktop provider for Paseo with persistent WS streaming"
 ```
 
 `.gitignore` 已排除：`node_modules/`、`*.bak-*`、`.test-last.json`、`.DS_Store`、`forge/`、`STATUS.md`、`JOURNAL.md`。

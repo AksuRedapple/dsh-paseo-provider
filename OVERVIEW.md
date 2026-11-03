@@ -1,46 +1,39 @@
-# DeepSeek Harness (WS + ACP)
+# DeepSeek Harness (desktop)
 
-Paseo providers for DeepSeek Harness (DSH), a desktop agent harness. The plugin adds two providers: a WebSocket provider backed by DSH's session stream, and an ACP provider for clients that prefer the Agent Client Protocol.
-
-The plugin works with the stock DSH desktop app. It does not install a DSH profile plugin, does not edit anything under `~/.dsh`, and needs only a Paseo plugin reload; the other approach to this integration adds a bridge inside DSH and requires a daemon restart.
+Paseo provider for DeepSeek Harness (DSH), a desktop agent harness. The plugin talks to the DSH desktop app that is already running on the same machine: it does not install a CLI, create a DSH profile, or change DSH configuration.
 
 ## How it works
 
-DSH runs locally and exposes an HTTP RPC endpoint plus a WebSocket mux at `/api/remote.mux`. The plugin follows a DSH session with one persistent `session/follow` stream (snapshot, events and assistant stream chunks), converts DSH events into Paseo timeline items, and uses `turn/end` as the authoritative end of a turn. The default ACP provider is a small stdio adapter (`acp-server.mjs`) over the same DSH endpoints, so both providers share one turn state machine and one set of failure semantics.
-
-An optional second ACP provider, `dsh-acp-official`, launches the official `dsh --profile acp` server instead. Get it by setting `DSH_ACP_MODE=official` (only) or `DSH_ACP_MODE=both` (alongside the default). The plugin finds the `dsh` CLI in this order: `DSH_CLI`, the CLI bundled with the DSH desktop app, then `dsh` on `PATH`. The official profile adds permission prompts, HTTP MCP servers and session list/resume, but it lists models at startup (30–90 seconds cold start in testing) and does not expose plans or commands.
+DSH's desktop app exposes a local HTTP RPC endpoint and a WebSocket mux. The plugin reads the app's launch token from its local web log, exchanges it for an auth cookie on loopback, and connects to `127.0.0.1:8780`. It follows a DSH session with one persistent `session/follow` stream (snapshot, events and assistant stream chunks), converts DSH events into Paseo timeline items, and uses DSH's `turn/end` as the authoritative end of a turn.
 
 ## Setup
 
 - Paseo 0.14 or newer.
-- DSH desktop 0.2.1-rc.x running on the same machine. The plugin reads the launch token from the local DSH web log, exchanges it for an auth cookie, and connects to `127.0.0.1:8780`; `DSH_BASE`, `DSH_MUX`, `DSH_COOKIE` and `DSH_WEB_LOG` override the discovery.
-- The optional official ACP mode needs the `dsh` CLI (found automatically in the desktop app or on `PATH`) and pays a longer cold start because it lists models at startup.
-- DSH login is handled by DSH itself; the plugin does not store or request accounts or tokens.
-- The default ACP provider starts `acp-server.mjs` with the Node.js runtime of the Paseo daemon.
+- The DSH desktop app running on the same machine (verified with 0.2.1-rc.x on macOS).
+- The plugin reads `~/Library/Logs/DeepSeek Harness/dsh-web.log` on macOS. Set `DSH_WEB_LOG` if the log is elsewhere, or `DSH_BASE` / `DSH_MUX` to skip discovery.
+- DSH login is handled by DSH; the plugin does not store accounts or tokens.
 
 ## Capabilities
 
 - List DSH sessions, open them with history replay, and create new sessions.
-- Stream reasoning and assistant text, tool calls and results, todo lists, usage (token counts and context-window occupancy), and turn state.
+- Stream reasoning and assistant text, tool calls and results, todo lists, token usage and context-window occupancy, and turn state.
 - Interrupt a running turn, close a session, and report whether a runtime can be stopped.
 - Model catalog from DSH, including model and reasoning-effort selection for existing sessions.
 - Image prompts and steering a running turn.
-- ACP: streaming output, tool calls, model selection through session config options, context usage updates, plans, and session history replay.
+- Report snapshot truncation, reconnects and unknown events as visible notices.
 
 ## Data access
 
-The plugin connects only to the local DSH endpoint. When `DSH_BASE`/`DSH_MUX` are not set it reads the local DSH web log for a launch token, exchanges the token for an auth cookie on loopback, and uses that cookie for HTTP and WebSocket requests; the cookie stays in memory and is not logged or sent anywhere else. It reads DSH session data and sends prompts, images, model selections and cancellation requests to DSH. Prompts and tool results are processed and stored by DSH, and are forwarded by DSH to the model providers configured inside DSH; the plugin adds no external services, telemetry, or analytics.
+The plugin reads the local DSH web log to obtain a launch token, then exchanges the token for an auth cookie on `127.0.0.1` and uses that cookie for local HTTP and WebSocket requests. The cookie is kept in memory and is not logged or sent anywhere else. The plugin connects only to the local DSH endpoint; it sends prompts, images, model selections and cancellation requests to DSH. Prompts and tool results are stored and forwarded to model providers by DSH itself. The plugin adds no external services, telemetry, or analytics.
 
 ## Permissions
 
-The plugin runs unsandboxed with the permissions of the user running the Paseo daemon, like other Paseo plugins. It does not add a tool-approval layer: DSH executes tools according to its own configuration preset. The plugin does not modify files outside the DSH endpoints it calls.
+The plugin runs unsandboxed with the permissions of the user running the Paseo daemon, like other Paseo plugins. It does not add a tool-approval layer: DSH executes tools according to its own configuration preset. It does not modify files outside the DSH endpoints it calls.
 
 ## Limitations
 
-- DSH snapshot windows are fixed by DSH; very long histories may be truncated (the plugin reports truncation instead of paginating).
-- The default ACP provider does not implement permission prompts or MCP servers; the optional official ACP mode does.
-- Slash commands, session revert and archive are not supported in either ACP mode.
-- The official ACP mode lists models at startup (30–90 seconds during testing) and does not expose plans, todos or historical replay.
-- MCP servers configured in Paseo are not forwarded into DSH by the WebSocket provider; use the official ACP mode when Paseo MCP tools are required.
-- Verified on macOS with DSH 0.2.1-rc.x and Paseo 0.14; other platforms are untested.
-- DSH is a private protocol. Unknown events and fields are reported as notices rather than guessed, but a DSH release can still change behavior.
+- Requires the DSH desktop app to be running; there is no CLI or headless mode.
+- Verified on macOS with DSH 0.2.1-rc.x and Paseo 0.14. Windows and Linux are untested and need `DSH_WEB_LOG` or `DSH_BASE`.
+- DSH is a private protocol; unknown events are reported as notices, but a DSH release can still change behavior.
+- Very long histories are truncated by DSH (reported as a notice; no pagination).
+- Permission prompts, MCP servers, slash commands, session revert and archive are not supported.

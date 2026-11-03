@@ -1,5 +1,6 @@
 # DESIGN — DSH ↔ Paseo provider 传输与 turn 状态机
 
+> 2.0.0 起只保留 WS 桌面通道；本文档的 ACP 章节保留为 v1.x 历史参考（见 tag v1.3.0）。
 > 状态：2026-11-03 已实现（持久 follow + 共用状态机）；协议细节随实现更新
 > 范围：WS（`dsh`）与 ACP（`dsh-acp`）两条通道共用的数据路径
 

@@ -1,5 +1,5 @@
 /**
- * DSH mux 持久 follow（WS provider 与 ACP server 共用）。
+ * DSH mux 持久 follow（WS provider 共用）。
  *
  * 一次 open 消费 snapshot → event / assistant-stream：
  *   · 断线指数退避重连；重连快照补发 seq > lastSeq 的记录；

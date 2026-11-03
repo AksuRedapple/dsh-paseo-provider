@@ -1,7 +1,7 @@
 {
   "id": "dsh-provider",
-  "name": "DeepSeek Harness (WS + ACP)",
-  "description": "DeepSeek Harness as a Paseo provider over its local WS mux, with an ACP adapter. No DSH profile changes.",
+  "name": "DeepSeek Harness (desktop)",
+  "description": "DeepSeek Harness as a Paseo provider through the running desktop app; no CLI, no DSH profile changes.",
   "media": [],
   "requirements": { "paseo": ">=0.14.0" },
   "build": [["npm", "ci", "--omit=dev", "--ignore-scripts"]]

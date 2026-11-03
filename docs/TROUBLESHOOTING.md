@@ -34,18 +34,7 @@ paseo plugin ls | grep dsh-provider
 2. 新开会话复测（旧连接不会热更新）；
 3. 查日志里的 `stream ended ... replyText= turnEnd=`：正常应为 `turnEnd=true`。
 
-## 4. ACP provider 显示 error
-
-`runAcpProvider` 的 status 探针会调用 `session/new`，后者需要 DSH 在线。先修好第 1 条，再看：
-
-```bash
-printf '%s\n' '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}' \
-  | node acp-server.mjs
-```
-
-应返回 `agentCapabilities.loadSession: true`。
-
-## 5. DSH 桌面版启动崩溃（上游问题）
+## 4. DSH 桌面版启动崩溃（上游问题）
 
 如果 `~/bin/dsh-start.sh` 后 8780 仍不监听，且 crash log 出现：
 
@@ -62,12 +51,11 @@ inspector: source state exceeds the source-frame byte limit
 - 锁定更新（无 sudo）：把 `~/Library/Caches/@deepseek-aidsh-desktop-updater` 与 `com.deepseek.dsh.ShipIt` 设为只读，并禁用 pending；app bundle 受 macOS App Management 保护，用户级 `chflags/chmod` 会被拒；需要硬锁时用 `sudo chflags uchg "/Applications/DeepSeek Harness.app"`（或 hosts 阻断下载域）；
 - 不要通过改 provider 绕过：DSH 后端没起时 provider 只能报 unavailable。
 
-## 6. 收集证据
+## 5. 收集证据
 
 ```bash
 paseo plugin logs dsh-provider
 tail -100 ~/.paseo/daemon.log
-cat /tmp/dsh-acp.log            # ACP 子进程日志（存在时）
 ```
 
-提 issue 时请附：`node -v`、Paseo 版本、DSH 版本、`curl 8781` 状态码、插件日志中 `Plugin ready` / `stream ended` 行。
+提 issue 时请附：`node -v`、Paseo 版本、DSH 版本、插件日志中 `endpoint ...` / `Plugin ready` / `stream ended` 行。

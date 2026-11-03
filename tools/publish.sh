@@ -21,6 +21,6 @@ if gh repo view "$OWNER/$REPO" >/dev/null 2>&1; then
 fi
 
 gh repo create "$OWNER/$REPO" "--$VIS" --source . --remote origin --push \
-  --description "Paseo providers for DeepSeek Harness: persistent WS mux + ACP, shared turn state machine"
+  --description "Paseo provider for the DeepSeek Harness desktop app: persistent WS mux streaming"
 git push origin v1.0.0
 gh repo view "$OWNER/$REPO" --json url,visibility

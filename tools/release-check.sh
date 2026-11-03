@@ -12,7 +12,7 @@ echo "$PACK" | grep -q "README.md" || { echo "missing README.md"; exit 1; }
 echo "$PACK" | grep -q "LICENSE" || { echo "missing LICENSE"; exit 1; }
 echo "$PACK" | grep -q "CHANGELOG.md" || { echo "missing CHANGELOG.md"; exit 1; }
 echo "$PACK" | grep -q "server/dsh-follow.mjs" || { echo "missing dsh-follow.mjs"; exit 1; }
-echo "$PACK" | grep -q "server/acp-map.mjs" || { echo "missing acp-map.mjs"; exit 1; }
+echo "$PACK" | grep -q "server/dsh-endpoint.mjs" || { echo "missing dsh-endpoint.mjs"; exit 1; }
 echo "$PACK" | grep -q "docs/DESIGN.md" || { echo "missing DESIGN.md"; exit 1; }
 echo "$PACK" | grep -q "docs/VERIFICATION.md" || { echo "missing VERIFICATION.md"; exit 1; }
 echo "$PACK" | grep -q "docs/TROUBLESHOOTING.md" || { echo "missing TROUBLESHOOTING.md"; exit 1; }

@@ -48,4 +48,3 @@ export function thinkingOptionsFor(cat: unknown, ref: ModelRef | null | undefine
 export function sessionModelRef(item: unknown): ModelRef | null;
 export function contextWindowOf(item: unknown): number | undefined;
 export function toProviderConfig(cat: unknown, current: ModelRef | null | undefined): ProviderConfigStateLike;
-export function acpConfigOptions(cat: unknown, current: ModelRef | null | undefined): any[];

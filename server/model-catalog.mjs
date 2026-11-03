@@ -1,11 +1,11 @@
 /**
- * DSH 模型目录 → Paseo / ACP 的纯映射（可单测，不碰 I/O）。
+ * DSH 模型目录 → Paseo 的纯映射（可单测，不碰 I/O）。
  *
  * 实测 DSH 的形状（2026-11-03）：
  *   { default:{provider,model,reasoningEffort?}, groups:[{id,name,models:[{id,name,description?,reasoning:{efforts:[{id,name,description?}],defaultEffort?}}]}] }
  *
- * Paseo 的模型 id 只有一个字符串、ACP 的 model 值也只有一个字符串，
- * 而 DSH 的模型由 (provider, model) 二元组唯一确定 → 用 "provider::model" 编码。
+ * Paseo 的模型 id 只有一个字符串，而 DSH 的模型由 (provider, model) 二元组
+ * 唯一确定 → 用 "provider::model" 编码。
  */
 
 export const MODEL_SEP = '::';
@@ -119,45 +119,3 @@ export function toProviderConfig(cat, current) {
   };
 }
 
-/** ACP session/new、session/load、set_config_option 共用的 configOptions。 */
-export function acpConfigOptions(cat, current) {
-  const { models, defaultModel } = catalogDefaults(cat);
-  if (!models.length) return [];
-  const currentValue = current ? encodeModelId(current.provider, current.model) : defaultModel;
-  const options = models.map((m) => ({
-    value: m.id,
-    name: m.label,
-    ...(m.description ? { description: m.description } : {}),
-  }));
-  if (currentValue && !options.some((o) => o.value === currentValue)) {
-    options.unshift({ value: currentValue, name: current?.model || currentValue });
-  }
-  const out = [
-    {
-      type: 'select',
-      id: 'model',
-      name: 'Model',
-      category: 'model',
-      currentValue,
-      options,
-    },
-  ];
-  const ref = current || parseModelId(defaultModel);
-  const efforts = thinkingOptionsFor(cat, ref);
-  if (efforts.length) {
-    const preset = current?.reasoningEffort || efforts.find((e) => e.isDefault)?.id || efforts[0].id;
-    out.push({
-      type: 'select',
-      id: 'reasoning_effort',
-      name: 'Reasoning effort',
-      category: 'thought_level',
-      currentValue: preset,
-      options: efforts.map((e) => ({
-        value: e.id,
-        name: e.label,
-        ...(e.description ? { description: e.description } : {}),
-      })),
-    });
-  }
-  return out;
-}

@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.0.0 — 2026-11-03
+
+WS-only release.
+
+- Removed the ACP providers, `acp-server.mjs`, the ACP mapping tests and the `@getpaseo/plugin` runtime dependency. The plugin now only registers `dsh` (desktop WS mux).
+- The ACP variant remains available at tag `v1.3.0` and branch `acp-legacy`.
+- Listing name is now `DeepSeek Harness (desktop)`; the artifact has one runtime dependency (`ws`).
+
 ## 1.3.0 — 2026-11-03
 
 WS daily-use polish.

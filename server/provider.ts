@@ -1,5 +1,5 @@
 /**
- * Paseo provider：DSH（2026-11-02，契约来自 @getpaseo/plugin dist 类型定义）
+ * Paseo provider：DSH（2026-11-02，契约来自 Paseo provider 类型定义）
  *
  * 契约要点（实测+类型）：
  *  · inputs:  catalog / sessions / session.open / session.prompt / session.interrupt / ...

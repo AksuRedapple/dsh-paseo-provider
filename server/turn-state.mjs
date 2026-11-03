@@ -1,5 +1,5 @@
 /**
- * turn-state —— WS / ACP 共用的「一轮对话何时结束」状态机（纯逻辑，无 I/O）。
+ * turn-state —— WS provider 的「一轮对话何时结束」状态机（纯逻辑，无 I/O）。
  *
  * 输入：snapshot / DSH event / assistant-stream frame / tick(now)
  * 输出：actions（timeline / turn / notice / echo / done），由调用方转换成各自协议。
