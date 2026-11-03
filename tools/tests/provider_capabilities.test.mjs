@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
 import { extname } from 'node:path';
 import { startMockDsh, sendMockTurn } from './mock-dsh.mjs';
+import { classifyEvent, createTurnState } from '../../server/turn-state.mjs';
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -171,4 +172,11 @@ test('capabilities: history replay 重建 user/assistant/tool/todo', async (t) =
 
   const truncated = events.find((e) => e.type === 'session.notice' && /截断/.test(e.notice?.description || ''));
   assert.ok(truncated, 'replay truncation notice expected');
+});
+
+
+test('capabilities: session/end-seed 视为已知忽略事件', () => {
+  assert.equal(classifyEvent('session/end-seed'), 'ignore');
+  const st = createTurnState({ startSeq: 0, now: Date.now() });
+  assert.deepEqual(st.onEvent({ type: 'session/end-seed', seq: 1, data: {} }), []);
 });

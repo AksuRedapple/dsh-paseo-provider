@@ -93,3 +93,34 @@ test('provider-models: usage 同时认真机 camelCase 与旧版 snake_case', as
   assert.equal(usageFromChunk({ usage: {} }), null);
   assert.equal(usageFromChunk(null), null);
 });
+
+test('provider-models: session.open 应用 config.model/thinkingOption', async (t) => {
+  const mock = await startMockDsh(() => {}, { sessions: [SESSION_ITEM] });
+  process.env.DSH_BASE = `http://127.0.0.1:${mock.port}`;
+  process.env.DSH_MUX = `ws://127.0.0.1:${mock.port}`;
+  t.after(() => mock.close());
+
+  const { createProvider } = await import('../../server/provider.ts');
+  const conn = await createProvider().connect({});
+  const events = [];
+  conn.onEvent((e) => events.push(e));
+
+  await conn.send({
+    type: 'session.open', requestId: 'r1', sessionId: 'p2',
+    config: { cwd: '/tmp', model: 'prov-a::mock-pro', thinkingOption: 'low' },
+    persistence: { version: 1, data: { sessionId: 'mock-session' } },
+    history: 'skip',
+  });
+  const start = Date.now();
+  while (Date.now() - start < 5000 && !events.some((e) => e.type === 'session.ready')) {
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  const select = mock.calls.filter((c) => c.method === 'session/selectModel');
+  assert.equal(select.length, 1);
+  assert.deepEqual(select[0].args, {
+    sessionId: 'mock-session', provider: 'prov-a', model: 'mock-pro', reasoningEffort: 'low',
+  });
+  const cfg = events.find((e) => e.type === 'session.config')?.config;
+  assert.equal(cfg?.model, 'prov-a::mock-pro');
+  assert.equal(cfg?.thinkingOption, 'low');
+});

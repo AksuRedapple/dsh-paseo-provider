@@ -89,7 +89,15 @@ export function createProvider() {
                 blocks: Array.isArray(input.prompt?.input?.content) ? input.prompt.input.content.length : undefined,
                 delivery: input.prompt?.delivery,
               }
-            : input;
+            : input?.type === 'session.open'
+              ? {
+                  type: 'session.open',
+                  sessionId: input.sessionId,
+                  cwd: input.config?.cwd,
+                  history: input.history,
+                  persistence: Boolean(input.persistence),
+                }
+              : input;
           console.error('[dsh] INPUT', JSON.stringify(logInput).slice(0,160));
           try {
             switch (input?.type) {
@@ -145,8 +153,53 @@ export function createProvider() {
                 });
 
                 // 把 DSH 侧的当前模型同步给 Paseo（已有会话读 projections.modelSelection，
-                // 新会话回落到目录默认值），否则模型选择器只会显示目录默认值。
-                const model = await resolveSessionModel(dshId).catch(() => null);
+                // 新会话回落到目录默认值），并应用 Paseo 在 open 时指定的模型/思考档位。
+                let model = await resolveSessionModel(dshId).catch(() => null);
+                const requestedModel = str(input.config?.model);
+                const requestedThinking = str(input.config?.thinkingOption);
+                const target = requestedModel ? parseModelId(requestedModel) : null;
+                if (requestedModel && !target) {
+                  emit({
+                    type: 'session.notice',
+                    sessionId: sid,
+                    notice: {
+                      id: `open-model-${Date.now()}`,
+                      severity: 'info',
+                      title: 'DSH',
+                      description: `未知模型 id：${requestedModel}，使用 DSH 当前模型`,
+                    },
+                  });
+                }
+                if (target || (requestedThinking && model)) {
+                  const provider = target?.provider ?? model!.provider;
+                  const modelId = target?.model ?? model!.model;
+                  const effort = requestedThinking || model?.reasoningEffort;
+                  const same = model
+                    && model.provider === provider
+                    && model.model === modelId
+                    && (!requestedThinking || model.reasoningEffort === requestedThinking);
+                  if (!same) {
+                    try {
+                      const r = await selectModel(dshId, provider, modelId, effort);
+                      model = {
+                        provider: r.selected.provider,
+                        model: r.selected.model,
+                        ...(r.selected.reasoningEffort ? { reasoningEffort: r.selected.reasoningEffort } : {}),
+                      };
+                    } catch (e) {
+                      emit({
+                        type: 'session.notice',
+                        sessionId: sid,
+                        notice: {
+                          id: `open-model-err-${Date.now()}`,
+                          severity: 'warning',
+                          title: 'DSH',
+                          description: `无法应用模型/思考档位：${errorMessage(e)}`,
+                        },
+                      });
+                    }
+                  }
+                }
                 if (model) sessionModels.set(sid, model);
                 const cat = model ? await loadCatalog().catch(() => null) : null;
                 if (cat) {

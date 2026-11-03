@@ -14,6 +14,7 @@ export const IGNORED_EVENTS = new Set([
   'agent/inbox/spliced', 'job/registered', 'job/settled',
   'system/message', 'developer/message', 'workspace/changes',
   'permission/preset', 'sandbox/mode', 'approval/policy',
+  'session/end-seed',
 ]);
 
 /** 事件分类：timeline / turn / ignore / unknown */

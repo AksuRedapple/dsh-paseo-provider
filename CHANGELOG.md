@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.1.0 — 2026-11-03
+
+- Apply `config.model` / `config.thinkingOption` when opening a session, so `paseo agent run --model/--thinking` works for the `dsh` provider.
+- Treat `session/end-seed` as a known ignored event; no more unknown-event notices for it.
+- Redact `session.open` config/env from logs; prompt text/images already excluded.
+- 40 tests / 8 files.
+
 ## 2.0.3 — 2026-11-03
 
 - Stop emitting the snapshot-truncation notice on every turn. The notice is only shown when opening or replaying history.
