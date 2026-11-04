@@ -101,6 +101,7 @@ follow.close();
 - **回复判定**：只有 `assistant/message` 里存在 `text` block 才算回复；tool-call 消息不算。
 - **回声抑制**：`waitEcho` 阶段只寻找匹配本次 prompt 的 `user/message`，找到后返回其 seq；该事件不进入时间线。
 - **超时**：总预算 6h（goal 轮次实测可跑 25 分钟）；echo 预算 15s。外部 steer 可用 `DSH_STEER_BUDGET_MS` 覆盖。
+- **run 启动回执**：`session.prompt` 被 DSH 接受后立即发 `prompt_result(turn|steer)`；turnId 由 provider 生成并贯穿本轮所有 `session.turn` 事件。Paseo 的 bridge 若 60s 内看不到启动回执，会按 `run did not start` 中止（2026-11-04 真机：149s 的 goal 回合被 60s 中止）。
 - **turn 事件**：`turn/start` → `session.turn(started)`；`turn/end` → `session.turn(completed|failed|canceled)`。
 
 `assistant-stream` 映射（2026-11-03 实测）：

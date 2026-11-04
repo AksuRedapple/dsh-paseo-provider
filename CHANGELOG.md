@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.5.1 — 2026-11-04
+
+- Report `prompt_result(turn|steer)` as soon as DSH accepts the prompt, using a provider-generated turn id that every `session.turn` event reuses. Paseo aborts a run after 60 seconds if it never sees the start result, so any turn longer than a minute failed with `run did not start`.
+- Stop overriding the turn-state defaults in `runTurn` (`120_000` / 5 ticks). Long goal turns now really use the 6-hour budget and the ~10-minute idle fallback.
+- Tests: 48 tests / 8 files.
+
 ## 2.5.0 — 2026-11-04
 
 - Goal cards are emitted once per open from session projections. Historical `goal/change` revisions no longer add duplicate task cards (Paseo appends a new todo card whenever its content differs; same-id merging only applies to text streams).

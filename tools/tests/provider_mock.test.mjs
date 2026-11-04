@@ -39,13 +39,17 @@ test('provider-mock: WS prompt emits tool, text, usage, completion', async (t) =
   await new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error('timeout waiting for prompt_result')), 8000);
     const iv = setInterval(() => {
-      if (events.some((e) => e.type === 'session.prompt_result')) {
+      if (events.some((e) => e.type === 'session.prompt_result' && e.result?.type === 'completed')) {
         clearTimeout(timer); clearInterval(iv); resolve();
       }
     }, 20);
   });
 
-  const promptResult = events.find((e) => e.type === 'session.prompt_result');
+  // run 启动时必须先回 prompt_result(turn)，否则 Paseo 60s 后会判定 run 未启动
+  const turnResult = events.find((e) => e.type === 'session.prompt_result' && e.result?.type === 'turn');
+  assert.ok(turnResult, 'prompt_result(turn) expected when the turn starts');
+  assert.match(turnResult.result.turnId, /^dsh-turn-/);
+  const promptResult = events.find((e) => e.type === 'session.prompt_result' && e.result?.type === 'completed');
   assert.equal(promptResult.result.type, 'completed');
 
   const items = events.filter((e) => e.type === 'timeline.item').map((e) => e.item);

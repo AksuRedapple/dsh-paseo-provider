@@ -63,7 +63,8 @@ test('lifecycle: can_stop/interrupt/close on a running turn', async (t) => {
   assert.equal(canStop.canStop, true);
 
   await conn.send({ type: 'session.interrupt', requestId: 'r3', sessionId: 'p1' });
-  const result = await waitFor(events, (e) => e.type === 'session.prompt_result');
+  const result = await waitFor(events,
+    (e) => e.type === 'session.prompt_result' && e.result?.type === 'failed');
   assert.equal(result.result.type, 'failed');
   assert.match(String(result.result.error?.message), /canceled/);
 
@@ -83,8 +84,9 @@ test('lifecycle: can_stop/interrupt/close on a running turn', async (t) => {
   await conn.send({ type: 'session.close', requestId: 'r6', sessionId: 'p2' });
   const closed = await waitFor(events, (e) => e.type === 'session.closed');
   assert.equal(closed.sessionId, 'p2');
-  await waitFor(events, () => events.filter((e) => e.type === 'session.prompt_result').length >= 2);
-  const last = events.filter((e) => e.type === 'session.prompt_result').at(-1);
+  await waitFor(events, () => events.filter((e) =>
+    e.type === 'session.prompt_result' && e.result?.type === 'failed').length >= 2);
+  const last = events.filter((e) => e.type === 'session.prompt_result' && e.result?.type === 'failed').at(-1);
   assert.equal(last.result.type, 'failed');
 });
 
@@ -115,6 +117,45 @@ test('lifecycle: 外部运行的 DSH 会话 → 打开提示 + prompt 快速失�
   assert.equal(failed.result.type, 'failed');
   assert.equal(failed.result.error.code, 'dsh/busy');
   assert.ok(!mock.calls.some((c) => c.method === 'session/prompt'), 'must not queue a prompt');
+});
+
+test('lifecycle: run start is reported before a long turn ends', async (t) => {
+  const mock = await startMockDsh((ws, streamId) => {
+    const send = (value) => ws.send(JSON.stringify({ type: 'item', streamId, value }));
+    const now = Date.now();
+    send({ type: 'event', event: { type: 'user/message', seq: 1, time: now,
+      data: { content: [{ type: 'text', text: 'hello' }], source: { kind: 'user' } } } });
+    send({ type: 'event', event: { type: 'turn/start', seq: 2, time: now, data: { turn: 7 } } });
+    setTimeout(() => {
+      send({ type: 'event', event: { type: 'turn/end', seq: 3, time: Date.now(),
+        data: { turn: 7, reason: { kind: 'completed' } } } });
+    }, 300);
+  });
+  process.env.DSH_BASE = `http://127.0.0.1:${mock.port}`;
+  process.env.DSH_MUX = `ws://127.0.0.1:${mock.port}`;
+  t.after(() => mock.close());
+
+  const { createProvider } = await import('../../server/provider.ts');
+  const conn = await createProvider().connect({});
+  const events = [];
+  conn.onEvent((e) => events.push(e));
+
+  await conn.send({
+    type: 'session.open', requestId: 'r1', sessionId: 'p1',
+    config: { cwd: '/tmp' }, history: 'skip',
+  });
+  await waitFor(events, (e) => e.type === 'session.ready');
+
+  await prompt(conn, 'p1');
+  // Paseo 60s 内必须看到 prompt_result(turn)，否则长回合会被判「run did not start」
+  const started = await waitFor(events,
+    (e) => e.type === 'session.prompt_result' && e.result?.type === 'turn');
+  assert.match(started.result.turnId, /^dsh-turn-/);
+  assert.ok(!events.some((e) => e.type === 'session.turn' && e.state === 'completed'),
+    'turn must still be running when the start result is emitted');
+
+  const done = await waitFor(events, (e) => e.type === 'session.turn' && e.state === 'completed');
+  assert.equal(done.turnId, started.result.turnId);
 });
 
 test('lifecycle: 外部运行的会话默认 steer 插入当前轮次', async (t) => {
@@ -149,7 +190,10 @@ test('lifecycle: 外部运行的会话默认 steer 插入当前轮次', async (t
 
   await prompt(conn, 'p1');
   const result = await waitFor(events, (e) => e.type === 'session.prompt_result');
-  assert.equal(result.result.type, 'completed');
+  assert.equal(result.result.type, 'steer');
+  const finished = await waitFor(events,
+    (e) => e.type === 'session.prompt_result' && e.result?.type === 'completed');
+  assert.equal(finished.result.type, 'completed');
   assert.equal(mock.calls.find((c) => c.method === 'session/prompt')?.args.mode, 'steer');
 
   const started = events.find((e) => e.type === 'session.turn' && e.state === 'started');

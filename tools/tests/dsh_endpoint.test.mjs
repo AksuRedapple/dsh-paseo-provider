@@ -140,11 +140,12 @@ test('endpoint-6: cookie 鉴权的 mock DSH 端到端（发现 → 换 cookie �
     prompt: { clientMessageId: 'c1', delivery: 'auto', input: { type: 'message', content: [{ type: 'text', text: 'hello' }] } },
   });
   const start = Date.now();
-  while (Date.now() - start < 8000 && !events.some((e) => e.type === 'session.prompt_result')) {
+  while (Date.now() - start < 8000 &&
+    !events.some((e) => e.type === 'session.prompt_result' && e.result?.type === 'completed')) {
     await new Promise((r) => setTimeout(r, 20));
   }
-  const result = events.find((e) => e.type === 'session.prompt_result');
-  assert.ok(result, 'prompt_result expected');
+  const result = events.find((e) => e.type === 'session.prompt_result' && e.result?.type === 'completed');
+  assert.ok(result, 'prompt_result(completed) expected');
   assert.equal(result.result.type, 'completed');
   const text = events.filter((e) => e.type === 'timeline.item' && e.item.type === 'assistant_message')
     .map((e) => e.item.text).join('');

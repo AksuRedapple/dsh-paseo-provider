@@ -46,7 +46,7 @@ test('capabilities: 图片 prompt 转成 DSH mediaType；todo/write 进时间线
       ] },
     },
   });
-  await waitFor(events, (e) => e.type === 'session.prompt_result');
+  await waitFor(events, (e) => e.type === 'session.prompt_result' && e.result?.type === 'completed');
 
   const sent = mock.calls.find((c) => c.method === 'session/prompt')?.args;
   assert.deepEqual(sent.content, [
@@ -105,7 +105,7 @@ test('capabilities: steer 插入运行中的轮次并回同一个 turnId', async
     prompt: { clientMessageId: 'c1', delivery: 'auto', input: { type: 'message', content: [{ type: 'text', text: 'hello' }] } },
   });
   const started = await waitFor(events, (e) => e.type === 'session.turn' && e.state === 'started');
-  assert.equal(started.turnId, 'dsh-turn-1');
+  assert.match(started.turnId, /^dsh-turn-/);
 
   await conn.send({
     type: 'session.prompt', sessionId: 'p1',
@@ -121,7 +121,8 @@ test('capabilities: steer 插入运行中的轮次并回同一个 turnId', async
   assert.deepEqual(calls[1].args.content, [{ type: 'text', text: 'also check the tests' }]);
 
   release();
-  const final = await waitFor(events, (e) => e.type === 'session.prompt_result' && e.clientMessageId === 'c1');
+  const final = await waitFor(events,
+    (e) => e.type === 'session.prompt_result' && e.clientMessageId === 'c1' && e.result?.type === 'completed');
   assert.equal(final.result.type, 'completed');
 });
 

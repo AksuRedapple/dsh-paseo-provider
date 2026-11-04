@@ -365,9 +365,25 @@ export function createProvider() {
                   break;
                 }
                 const steerExternal = externalRunning;
-                const turnId = steerExternal ? `dsh-steer-${Date.now()}` : undefined;
-                if (steerExternal && turnId) {
+                // Paseo 的 plugin bridge 拿到 prompt_result(turn|steer) 才算 run 启动，
+                // 否则 60s 后按「run did not start」中止。turnId 由我们生成并贯穿整轮，
+                // 不依赖 DSH turn/start 的到达时机。
+                const turnId = steerExternal ? `dsh-steer-${Date.now()}` : `dsh-turn-${Date.now()}`;
+                let turnStartReported = false;
+                const beginTurn = (kind: 'turn' | 'steer') => {
+                  if (turnStartReported) return;
+                  turnStartReported = true;
+                  emit({
+                    type: 'session.prompt_result',
+                    sessionId: input.sessionId,
+                    clientMessageId,
+                    result: { type: kind, turnId },
+                  });
                   emit({ type: 'session.turn', sessionId: input.sessionId, turnId, state: 'started' });
+                  activeTurnIds.set(input.sessionId, turnId);
+                };
+                if (steerExternal) {
+                  beginTurn('steer');
                   emit({
                     type: 'session.notice',
                     sessionId: input.sessionId,
@@ -378,7 +394,6 @@ export function createProvider() {
                       description: 'DSH 会话正在运行，已将消息插入当前轮次（steer）',
                     },
                   });
-                  activeTurnIds.set(input.sessionId, turnId);
                 }
                 // 持久 follow：snapshot 定基线 → 发 prompt → 消费 event/assistant-stream
                 // → turn/end 收工 → 最后才发 prompt_result。
@@ -397,9 +412,12 @@ export function createProvider() {
                         replyIdleTicks: 1_000_000,
                       }
                     : {}),
-                  ...(turnId ? { turnIdOverride: turnId, suppressTurnStart: true } : {}),
+                  turnIdOverride: turnId,
+                  suppressTurnStart: true,
                   // 纯图片消息没有可匹配的用户文本，跳过 echo 等待
                   startPhase: text ? 'waitEcho' : 'running',
+                  // prompt 已被 DSH 接受（或成功 steer）→ 立刻回 run start
+                  onStarted: () => { if (!steerExternal) beginTurn('turn'); },
                   onTurn: (id, state) => {
                     if (state === 'started') {
                       activeTurnIds.set(input.sessionId, id);
@@ -410,13 +428,14 @@ export function createProvider() {
                   },
                 })
                   .then(async ({ reason }) => {
-                    if (steerExternal && turnId && !turnClosed) {
+                    if (turnStartReported && !turnClosed) {
                       turnClosed = true;
                       emit({
                         type: 'session.turn',
                         sessionId: input.sessionId,
                         turnId,
-                        state: reason === 'canceled' ? 'canceled' : 'failed',
+                        state: reason === 'canceled' ? 'canceled'
+                          : reason === 'completed' ? 'completed' : 'failed',
                       });
                     }
                     // 一轮结束后 projections 已更新：把上下文占用补进 usage（Paseo 用它画占用环）
@@ -435,7 +454,7 @@ export function createProvider() {
                     });
                   })
                   .catch((e) => {
-                    if (steerExternal && turnId && !turnClosed) {
+                    if (turnStartReported && !turnClosed) {
                       turnClosed = true;
                       emit({
                         type: 'session.turn',
@@ -862,6 +881,7 @@ export async function runTurn(
     replyIdleTicks?: number;
     turnIdOverride?: string;
     suppressTurnStart?: boolean;
+    onStarted?: () => void;
     onTurn?: (turnId: string, state: string) => void;
   } = {},
 ): Promise<{ reason: string }> {
@@ -1024,14 +1044,17 @@ export async function runTurn(
       startSeq: snap.cursor,
       now: now(),
       echoTimeoutMs: deps.echoTimeoutMs ?? 15_000,
-      budgetMs: deps.budgetMs ?? 120_000,
+      // 不传 budgetMs / replyIdleTicks 时用状态机默认值（6h / ~10min）；
+      // 这里不要再写 120s/5tick 兜底，否则会把长 goal 轮次误杀。
+      ...(deps.budgetMs !== undefined ? { budgetMs: deps.budgetMs } : {}),
       startPhase: deps.startPhase ?? 'waitEcho',
-      replyIdleTicks: deps.replyIdleTicks ?? 5,
+      ...(deps.replyIdleTicks !== undefined ? { replyIdleTicks: deps.replyIdleTicks } : {}),
       // 每轮 follow 的首个快照都会 hasMore=true；截断只在打开/回放历史时提示一次
       noticeTruncation: false,
     });
     handle(state.onSnapshot(snap));
     await (deps.prompt || promptSession)(dshId, deps.content ?? text, deps.mode ?? 'queue');
+    deps.onStarted?.();
 
     timer = setInterval(() => {
       const at = now();

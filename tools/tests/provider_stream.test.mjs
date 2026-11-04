@@ -576,6 +576,41 @@ test('run-6: long tool silence does not finish the turn via idle fallback', asyn
   assert.equal(reason, 'canceled', 'must not finish while the tool is still pending');
 });
 
+test('run-7: default turn budget is not 120s and idle fallback is not 5 ticks', async () => {
+  const t0 = 1_000_000;
+  const started = Date.now();
+  const fakeNow = () => t0 + (Date.now() - started) * 2000;
+  let closed = false;
+  let wake;
+  const msg = { kind: 'event', event: { type: 'assistant/message', seq: 2, time: t0,
+    data: { turn: 1, step: 1, message: { content: [{ type: 'text', text: 'working' }] } } } };
+  let sent = false;
+  const fakeFollow = {
+    ready: Promise.resolve({ cursor: 1, hasMore: false, events: [] }),
+    close() { closed = true; wake?.({ value: undefined, done: true }); },
+    [Symbol.asyncIterator]() {
+      return {
+        next: () => {
+          if (closed) return Promise.resolve({ value: undefined, done: true });
+          if (!sent) { sent = true; return Promise.resolve({ value: msg, done: false }); }
+          return new Promise((resolve) => { wake = resolve; });
+        },
+      };
+    },
+  };
+  const ctl = new AbortController();
+  setTimeout(() => ctl.abort(), 120); // 240s 虚拟时间，已超过旧版 120s 预算
+  const { reason } = await runTurn('paseo-13', 'dsh-13', 'hello', () => {}, {
+    follow: () => fakeFollow,
+    prompt: async () => {},
+    now: fakeNow,
+    tickMs: 5,
+    startPhase: 'running',
+    signal: ctl.signal,
+  });
+  assert.equal(reason, 'canceled', 'defaults must be hours/10min, not 120s/5 ticks');
+});
+
 test('run-4: assistant-stream preview is emitted and the final duplicate is skipped', async () => {
   const messages = [
     { kind: 'assistant', frame: { type: 'start', turn: 1, step: 1 } },
