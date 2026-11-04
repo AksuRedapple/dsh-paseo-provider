@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.2.0 — 2026-11-03
+
+- Sync titles: open an existing session with its DSH title, and write the Paseo `title` back to DSH (`session/rename`) for new sessions.
+- Search platform-specific DSH web log locations (macOS, Windows `%APPDATA%`, Linux `~/.config`), still overridable with `DSH_WEB_LOG`.
+- Verified against Paseo 0.15.0 in an isolated daemon (plugin running, agent completed).
+- 42 tests / 8 files.
+
 ## 2.1.0 — 2026-11-03
 
 - Apply `config.model` / `config.thinkingOption` when opening a session, so `paseo agent run --model/--thinking` works for the `dsh` provider.

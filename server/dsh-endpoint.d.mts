@@ -11,12 +11,14 @@ export interface DshEndpointOptions {
   platform?: string;
   home?: string;
   logPath?: string;
+  logPaths?: string[];
   fetchImpl?: typeof fetch;
   exchangeTimeoutMs?: number;
   force?: boolean;
 }
 
 export function parseWebLog(text: string): { token: string; port: number } | null;
+export function webLogCandidates(opts?: { platform?: string; home?: string; env?: Record<string, string | undefined> }): string[];
 export function defaultWebLogPath(opts?: { platform?: string; home?: string; env?: Record<string, string | undefined> }): string;
 export function exchangeToken(opts: {
   base: string;

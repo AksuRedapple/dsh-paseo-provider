@@ -13,12 +13,13 @@
 - **桌面版原生交互**：图片 prompt（DSH `mediaType`）、运行中 steer 插话（`mode:'steer'`）、`todo/write` → 时间线任务列表。
 - **上下文与失败可见**：usage 带 token 与上下文窗口占用；seq 重置、快照截断、未知事件、重连缺口都有 notice，不静默。
 - **历史导入/回放**：列出 DSH 会话、打开并重建时间线；`hasMore` 截断会明确提示。
+- **标题同步**：打开已有会话时使用 DSH 标题；新会话把 Paseo 的 `title` 回写到 DSH（`session/rename`）。
 
 ## 要求
 
 - Node.js ≥ 22
 - **DSH 桌面版正在运行**（macOS 已验证；其他平台需设置 `DSH_WEB_LOG` 或 `DSH_BASE`/`DSH_MUX`）
-- Paseo daemon ≥ 0.14
+- Paseo daemon ≥ 0.14（已在 0.14 / 0.15 实测）
 
 插件不安装 DSH、不修改 DSH profile；它只读取本机 DSH web 日志里的 launch token 并在 loopback 换取 cookie。
 
@@ -107,6 +108,7 @@ node --test tools/tests/provider_stream.test.mjs
 - 快照窗口由 DSH 控制，超长历史会截断（有 notice，不分页）。
 - 权限审批、MCP、斜杠命令、revert/archive 未做（DSH desktop preset 自动执行 / 无对应端点）。
 - 目标 DSH 会话正在运行（桌面版/其他客户端）时，默认把消息 **steer 插入当前轮次**；设置 `DSH_RUNNING_MODE=fail` 可改为快速失败（`dsh/busy`），不排队等待。
+- DSH 自动改标题（`session/title` 事件）不会实时同步到 Paseo（Paseo 契约没有标题更新事件）；重新打开时以 DSH 标题为准。
 
 ## License
 

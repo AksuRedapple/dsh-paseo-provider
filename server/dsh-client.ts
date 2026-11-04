@@ -185,3 +185,8 @@ export async function selectModel(
   if (reasoningEffort) args.reasoningEffort = reasoningEffort;
   return rpc('session/selectModel', args, 'request', 10_000);
 }
+
+/** 重命名 DSH 会话（Paseo 的 config.title 回写）。 */
+export async function renameSession(sessionId: string, title: string): Promise<{ title: string; seq: number }> {
+  return rpc('session/rename', { sessionId, title }, 'request', 10_000);
+}

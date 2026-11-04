@@ -8,7 +8,7 @@ DSH's desktop app exposes a local HTTP RPC endpoint and a WebSocket mux. The plu
 
 ## Setup
 
-- Paseo 0.14 or newer.
+- Paseo 0.14 or newer (verified with 0.14 and 0.15).
 - The DSH desktop app running on the same machine (verified with 0.2.1-rc.x on macOS).
 - The plugin reads `~/Library/Logs/DeepSeek Harness/dsh-web.log` on macOS. Set `DSH_WEB_LOG` if the log is elsewhere, or `DSH_BASE` / `DSH_MUX` to skip discovery.
 - DSH login is handled by DSH; the plugin does not store accounts or tokens.
@@ -16,6 +16,7 @@ DSH's desktop app exposes a local HTTP RPC endpoint and a WebSocket mux. The plu
 ## Capabilities
 
 - List DSH sessions, open them with history replay, and create new sessions.
+- Sync titles: use the DSH title when opening, and write the Paseo title back to DSH for new sessions.
 - Stream reasoning and assistant text, tool calls and results, todo lists, token usage and context-window occupancy, and turn state.
 - Interrupt a running turn, close a session, and report whether a runtime can be stopped.
 - Model catalog from DSH, including model and reasoning-effort selection for existing sessions.
@@ -33,8 +34,9 @@ The plugin runs unsandboxed with the permissions of the user running the Paseo d
 ## Limitations
 
 - Requires the DSH desktop app to be running; there is no CLI or headless mode.
-- Verified on macOS with DSH 0.2.1-rc.x and Paseo 0.14. Windows and Linux are untested and need `DSH_WEB_LOG` or `DSH_BASE`.
+- Verified on macOS with DSH 0.2.1-rc.x and Paseo 0.14/0.15. Windows and Linux are untested; the plugin searches the platform log locations, and `DSH_WEB_LOG` or `DSH_BASE` overrides them.
 - DSH is a private protocol; unknown events are reported as notices, but a DSH release can still change behavior.
 - Very long histories are truncated by DSH (reported as a notice; no pagination).
 - Permission prompts, MCP servers, slash commands, session revert and archive are not supported.
 - Prompting a DSH session that is already running in another client steers into the current turn by default; set `DSH_RUNNING_MODE=fail` to reject with a visible busy error instead.
+- Title changes made by DSH after a turn are not pushed live (the Paseo provider contract has no title update event); reopening uses the DSH title.

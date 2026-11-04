@@ -1,7 +1,7 @@
 # VERIFICATION — 验证记录
 
 > 日期：2026-11-03 ｜ 环境：macOS (Apple Silicon) · Node 26 · Paseo 0.14 · 本地 DSH
-> 兼容性：Node 22.23.4 / 24.22.1 / 26.12.1 均实跑通过（40 条测试；22/24 用干净目录 `npm ci` 后运行）。
+> 兼容性：Node 22.23.4 / 24.22.1 / 26.12.1 均实跑通过（42 条测试；22/24 用干净目录 `npm ci` 后运行）。
 > 所有数字来自实际运行，不是估算。个人信息已脱敏。
 
 ## 1. 单测
@@ -10,7 +10,7 @@
 ./check.sh
 # ▸ tests 共 8 个测试（fast）
 # ▸ 结果: pass=8 fail=0
-# node --test: 40 / pass 40 / fail 0
+# node --test: 42 / pass 42 / fail 0
 # 干净目录 npm ci → check.sh 通过（Node 26 / Node 24）；Node 22.23.4 直跑通过
 ```
 
@@ -125,7 +125,10 @@ WS 路径（`server/provider.ts` 直连本机 DSH）：
 | 长会话回放 | 482 events → 105 条时间线（user 18 / reasoning 42 / tool 41 / assistant 4），1.18s；`hasMore=true` → notice「DSH 快照被截断」 |
 | 断线重连 | 客户端主动断开第 1 条连接 → `connects=2, snapshots=2, errors=1, gaps=0` |
 | 截断提示 | 打开/回放历史时提示一次；每轮 follow 的 `hasMore` 不再重复弹 notice（`provider-mock` 断言） |
-| open 指定模型 | `paseo agent run --model deepseek-official::deepseek-v4-pro --thinking low` → inspect 显示 Model/Tinking 均生效 |
+| open 指定模型 | `paseo agent run --model deepseek-official::deepseek-v4-pro --thinking low` → inspect 显示 Model/Thinking 均生效 |
+| 标题同步 | `--title TITLE-E2E-OK` → DSH `session/list` 中该会话标题为 `TITLE-E2E-OK`；打开已有会话使用 DSH 标题 |
+| Paseo 0.15 | 临时 0.15.0 daemon（127.0.0.1:16767，独立 home）加载插件 running；`agent run` 返回 `PASEO15-OK`，模型/usage 正常 |
+| 跨平台日志 | Windows/Linux 候选路径单测通过（`%APPDATA%\...\logs`、`~/.config/.../logs`）；未在真实 Windows/Linux 运行 |
 | 隐私 | `session.open` 日志不再包含 config/env；prompt 正文不落日志 |
 | cookie 轮换 | mock 换 cookie 后下一次 RPC 401 → 清缓存 → 重新换 cookie → 成功（`endpoint-7`） |
 | 外部运行中的会话 | 默认 `steer` 插入当前轮次（mock：`mode=steer`、synthetic turn、completed）；`DSH_RUNNING_MODE=fail` 时立即 `dsh/busy` |

@@ -63,6 +63,7 @@ export async function startMockDsh(onPrompt, opts = {}) {
       const value = method === 'session/create' ? { sessionId: opts.sessionId || 'mock-session' }
         : method === 'session/list' ? { items: sessions }
         : method === 'session/modelCatalog' ? (opts.catalog || MOCK_CATALOG)
+        : method === 'session/rename' ? { title: args.title, seq: 0 }
         : method === 'session/selectModel' ? {
           selected: {
             provider: args.provider,

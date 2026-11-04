@@ -124,3 +124,47 @@ test('provider-models: session.open 应用 config.model/thinkingOption', async (
   assert.equal(cfg?.model, 'prov-a::mock-pro');
   assert.equal(cfg?.thinkingOption, 'low');
 });
+
+test('provider-models: session.open 同步 DSH 标题并回写新会话 title', async (t) => {
+  const titled = {
+    sessionId: 'mock-session',
+    projections: {
+      values: {
+        title: 'DSH Title',
+        modelSelection: { next: { provider: 'prov-a', model: 'mock-flash' } },
+      },
+    },
+  };
+  const mock = await startMockDsh(() => {}, { sessions: [titled] });
+  process.env.DSH_BASE = `http://127.0.0.1:${mock.port}`;
+  process.env.DSH_MUX = `ws://127.0.0.1:${mock.port}`;
+  t.after(() => mock.close());
+
+  const { createProvider } = await import('../../server/provider.ts');
+  const conn = await createProvider().connect({});
+  const events = [];
+  conn.onEvent((e) => events.push(e));
+
+  // 已有会话：标题取 DSH 的
+  await conn.send({
+    type: 'session.open', requestId: 'r1', sessionId: 'p1',
+    config: { cwd: '/tmp' },
+    persistence: { version: 1, data: { sessionId: 'mock-session' } },
+    history: 'skip',
+  });
+  await new Promise((r) => setTimeout(r, 300));
+  const opened1 = events.find((e) => e.type === 'session.opened' && e.requestId === 'r1');
+  assert.equal(opened1?.title, 'DSH Title');
+
+  // 新会话：config.title 回写到 DSH
+  await conn.send({
+    type: 'session.open', requestId: 'r2', sessionId: 'p2',
+    config: { cwd: '/tmp', title: 'Paseo Title' },
+    history: 'skip',
+  });
+  await new Promise((r) => setTimeout(r, 300));
+  const rename = mock.calls.find((c) => c.method === 'session/rename');
+  assert.deepEqual(rename?.args, { sessionId: 'mock-session', title: 'Paseo Title' });
+  const opened2 = events.find((e) => e.type === 'session.opened' && e.requestId === 'r2');
+  assert.equal(opened2?.title, 'Paseo Title');
+});

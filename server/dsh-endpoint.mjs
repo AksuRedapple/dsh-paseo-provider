@@ -19,14 +19,35 @@ export function parseWebLog(text) {
   return { token: decodeURIComponent(last[2]), port };
 }
 
-/** DSH web 日志的默认位置（可用 DSH_WEB_LOG 覆盖）。 */
-export function defaultWebLogPath({ platform = process.platform, home = os.homedir(), env = process.env } = {}) {
-  if (env.DSH_WEB_LOG) return env.DSH_WEB_LOG;
-  if (platform === 'darwin') return path.join(home, 'Library', 'Logs', 'DeepSeek Harness', 'dsh-web.log');
-  if (platform === 'win32') {
-    return path.join(env.LOCALAPPDATA || path.join(home, 'AppData', 'Local'), 'DeepSeek Harness', 'logs', 'dsh-web.log');
+/**
+ * DSH web 日志候选位置。依据官方桌面文档：macOS 用 ~/Library/Logs/DeepSeek Harness；
+ * Windows / Linux 用 application userData 下的 logs（Electron app.getPath('logs')）。
+ * 应用目录名在不同版本可能是 "DeepSeek Harness" 或 "deepseek-harness"。
+ */
+export function webLogCandidates({ platform = process.platform, home = os.homedir(), env = process.env } = {}) {
+  const out = [];
+  if (env.DSH_WEB_LOG) out.push(env.DSH_WEB_LOG);
+  if (platform === 'darwin') {
+    out.push(path.join(home, 'Library', 'Logs', 'DeepSeek Harness', 'dsh-web.log'));
+  } else if (platform === 'win32') {
+    const roaming = env.APPDATA || path.join(home, 'AppData', 'Roaming');
+    const local = env.LOCALAPPDATA || path.join(home, 'AppData', 'Local');
+    out.push(path.join(roaming, 'DeepSeek Harness', 'logs', 'dsh-web.log'));
+    out.push(path.join(roaming, 'deepseek-harness', 'logs', 'dsh-web.log'));
+    out.push(path.join(local, 'DeepSeek Harness', 'logs', 'dsh-web.log'));
+  } else {
+    const config = env.XDG_CONFIG_HOME || path.join(home, '.config');
+    out.push(path.join(config, 'DeepSeek Harness', 'logs', 'dsh-web.log'));
+    out.push(path.join(config, 'deepseek-harness', 'logs', 'dsh-web.log'));
+    out.push(path.join(home, '.local', 'share', 'DeepSeek Harness', 'logs', 'dsh-web.log'));
+    out.push(path.join(home, '.local', 'share', 'deepseek-harness', 'logs', 'dsh-web.log'));
   }
-  return path.join(home, '.local', 'share', 'DeepSeek Harness', 'dsh-web.log');
+  return [...new Set(out)];
+}
+
+/** 默认取第一个候选（兼容旧调用）；实际解析会依次尝试全部候选。 */
+export function defaultWebLogPath(opts = {}) {
+  return webLogCandidates(opts)[0];
 }
 
 /** 用 launch token 换 dsh-auth cookie（名称与 authority 绑定，必须整对保留）。 */
@@ -63,12 +84,18 @@ export async function resolveDshEndpoint(opts = {}) {
     };
   }
 
-  const logPath = opts.logPath || defaultWebLogPath({ platform: opts.platform, home: opts.home, env });
-  let text = '';
-  try {
-    text = fs.readFileSync(logPath, 'utf8');
-  } catch {}
-  const parsed = parseWebLog(text);
+  const candidates = opts.logPaths
+    || (opts.logPath
+      ? [opts.logPath]
+      : webLogCandidates({ platform: opts.platform, home: opts.home, env }));
+  let parsed = null;
+  let logPath;
+  for (const p of candidates) {
+    try {
+      const found = parseWebLog(fs.readFileSync(p, 'utf8'));
+      if (found) { parsed = found; logPath = p; break; }
+    } catch {}
+  }
   if (!parsed) {
     return { base: LEGACY_BASE, mux: LEGACY_MUX, cookie: env.DSH_COOKIE, source: 'legacy-fallback' };
   }

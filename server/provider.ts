@@ -7,7 +7,7 @@
  *  · send() 只报"收到"，结果一律走 onEvent 推**完整快照**
  *  · ProviderSessionSummary = { persistence:{version,data}, cwd, title?, description?, updatedAt?(ISO) }
  */
-import { listSessions, promptSession, createSession, interruptSession, probeDsh, modelCatalog, selectModel } from './dsh-client';
+import { listSessions, promptSession, createSession, interruptSession, probeDsh, modelCatalog, selectModel, renameSession } from './dsh-client';
 import type { DshModelCatalog, DshPromptBlock } from './dsh-client';
 import { fetchSessionRecords, fetchSessionSnapshot, followSession, type DshEvent } from './dsh-ws';
 import { getDshEndpoint } from './dsh-endpoint.mjs';
@@ -142,6 +142,19 @@ export function createProvider() {
                 openSessions.set(sid, dshId);
                 console.error('[dsh] session.open', sid, 'dsh=', dshId, 'history=', input.history);
 
+                // 标题：已有会话用 DSH 的标题；新会话把 Paseo 的 config.title 回写到 DSH。
+                const desiredTitle = str(input.config?.title);
+                let dshTitle = await sessionTitleOf(dshId);
+                if (desiredTitle && (!dshTitle || !input.persistence)) {
+                  try {
+                    await renameSession(dshId, desiredTitle);
+                    dshTitle = desiredTitle;
+                  } catch (e) {
+                    console.error('[dsh] rename failed', errorMessage(e));
+                  }
+                }
+                const title = desiredTitle || dshTitle;
+
                 emit({
                   type: 'session.opened',
                   requestId: input.requestId,
@@ -150,6 +163,7 @@ export function createProvider() {
                   restoration: 'core',
                   persistence: { version: 1, data: { sessionId: dshId } },
                   cwd: String(input.config?.cwd ?? defaultCwd()),
+                  ...(title ? { title } : {}),
                 });
 
                 // 把 DSH 侧的当前模型同步给 Paseo（已有会话读 projections.modelSelection，
@@ -603,6 +617,16 @@ async function sessionRunning(dshId: string): Promise<boolean> {
     return items.find((s) => s.sessionId === dshId)?.running === true;
   } catch {
     return false;
+  }
+}
+
+async function sessionTitleOf(dshId: string): Promise<string | undefined> {
+  try {
+    const items = await listSessions();
+    const t = items.find((s) => s.sessionId === dshId)?.projections?.values?.title;
+    return typeof t === 'string' && t.trim() ? t : undefined;
+  } catch {
+    return undefined;
   }
 }
 

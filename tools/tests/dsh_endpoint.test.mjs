@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import {
   parseWebLog,
   defaultWebLogPath,
+  webLogCandidates,
   resolveDshEndpoint,
   clearDshEndpointCache,
 } from '../../server/dsh-endpoint.mjs';
@@ -37,6 +38,18 @@ test('endpoint-2: 默认日志路径与覆盖', () => {
     '/Volumes/Data/example/Library/Logs/DeepSeek Harness/dsh-web.log',
   );
   assert.equal(defaultWebLogPath({ platform: 'darwin', home: '/x', env: { DSH_WEB_LOG: '/tmp/log' } }), '/tmp/log');
+
+  const win = webLogCandidates({
+    platform: 'win32',
+    home: 'C:\\Users\\example',
+    env: { APPDATA: 'C:\\Users\\example\\AppData\\Roaming', LOCALAPPDATA: 'C:\\Users\\example\\AppData\\Local' },
+  });
+  assert.ok(win.some((p) => p.includes('Roaming') && p.endsWith('dsh-web.log')));
+  assert.ok(win.some((p) => p.includes('Local') && p.endsWith('dsh-web.log')));
+
+  const linux = webLogCandidates({ platform: 'linux', home: '/home/example', env: {} });
+  assert.ok(linux.includes('/home/example/.config/DeepSeek Harness/logs/dsh-web.log'));
+  assert.ok(linux.includes('/home/example/.local/share/DeepSeek Harness/logs/dsh-web.log'));
 });
 
 test('endpoint-3: 显式 env 覆盖优先', async () => {
@@ -136,4 +149,20 @@ test('endpoint-6: cookie 鉴权的 mock DSH 端到端（发现 → 换 cookie �
   const text = events.filter((e) => e.type === 'timeline.item' && e.item.type === 'assistant_message')
     .map((e) => e.item.text).join('');
   assert.equal(text, 'mock-answer');
+});
+
+
+test('endpoint-8: 依次尝试多个日志候选，跳过不存在的', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-endpoint-multi-'));
+  const logPath = join(dir, 'dsh-web.log');
+  writeFileSync(logPath, 'dsh web: http://192.168.1.9:8799?token=tok-multi\n');
+  const fetchImpl = async () => new Response('', { status: 302, headers: { 'set-cookie': 'dsh-auth-m=1; Path=/' } });
+  const ep = await resolveDshEndpoint({
+    env: {},
+    logPaths: [join(dir, 'missing.log'), logPath],
+    fetchImpl,
+  });
+  assert.equal(ep.source, 'discovered');
+  assert.equal(ep.logPath, logPath);
+  assert.equal(ep.base, 'http://127.0.0.1:8799');
 });
