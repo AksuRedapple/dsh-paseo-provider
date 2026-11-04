@@ -6,7 +6,7 @@
 - If the session is opened while a turn is already running, that turn is announced as started and closed when DSH emits `turn/end`.
 - The mirror yields to Paseo-initiated turns: it is stopped before `runTurn` and restarted afterwards, so the same events are never processed twice. Explicit steer keeps the mirror alive.
 - The open-time "session is running" notice is now only emitted in `DSH_RUNNING_MODE=fail`; in steer mode the live turn itself is shown instead of a stale notice.
-- Tests: 49 tests / 8 files.
+- Tests: 49 tests / 9 files.
 
 ## 2.5.2 — 2026-11-04
 

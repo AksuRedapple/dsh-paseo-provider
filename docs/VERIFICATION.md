@@ -1,16 +1,16 @@
 # VERIFICATION — 验证记录
 
-> 日期：2026-11-03 ｜ 环境：macOS (Apple Silicon) · Node 26 · Paseo 0.14 · 本地 DSH
-> 兼容性：Node 22.23.4 / 24.22.1 / 26.12.1 均实跑通过（42 条测试；22/24 用干净目录 `npm ci` 后运行）。
+> 日期：2026-11-04（v2.6.0）｜ 环境：macOS (Apple Silicon) · Node 26 · Paseo 0.14/0.15 · 本地 DSH
+> 兼容性：Node 22.23.4 / 24.22.1 / 26.12.1 均实跑通过（49 条测试；22/24 用干净目录 `npm ci` 后运行）。
 > 所有数字来自实际运行，不是估算。个人信息已脱敏。
 
 ## 1. 单测
 
 ```bash
 ./check.sh
-# ▸ tests 共 8 个测试（fast）
+# ▸ tests 共 9 个测试（fast）
 # ▸ 结果: pass=8 fail=0
-# node --test: 42 / pass 42 / fail 0
+# node --test: 49 / pass 49 / fail 0
 # 干净目录 npm ci → check.sh 通过（Node 26 / Node 24）；Node 22.23.4 直跑通过
 ```
 
@@ -32,6 +32,13 @@
 | run-3 | 工具 60s 超时结算为 failed |
 | run-4 | reasoning/text 预览发出，最终 assistant/message 同 step 去重 |
 | run-5 | usage chunk → session.usage（input/cached/output） |
+| run-6 | 长工具静默不触发 idle 兜底（挂起工具期间不数空闲） |
+| run-7 | 默认预算是小时级、兜底 ~10 分钟，不是 120s / 5 tick |
+| state-4 | idle 兜底在有挂起工具时跳过，无工具时才收工 |
+| state-5 | 30 分钟回合不会被默认预算判超时 |
+| lifecycle-start | 长回合在结束前先回 `prompt_result(turn)`（Paseo 60s run-start 契约） |
+| observer | 外部回合实时进入时间线：turn started/completed、user/assistant、无重复 |
+| models-import | 已有会话 open 不覆盖 DSH 模型；新会话仍应用 config |
 | client-1..3 | 非 JSON 上游错误可读、探活 5xx/200 |
 | provider-mock | mock DSH 跑完整 WS provider：tool_call、文本去重、usage、session.turn completed |
 | provider-lifecycle | can_stop_runtime → interrupt 取消；session.close 取消并 closed |
@@ -122,7 +129,7 @@ WS 路径（`server/provider.ts` 直连本机 DSH）：
 | 场景 | 结果 |
 |---|---|
 | usage 上下文 | 一轮后日志 `[dsh] context usage 26678 / 1048576`；`session.usage` 同时带 `contextWindowUsedTokens` / `contextWindowMaxTokens` |
-| 长会话回放 | 482 events → 105 条时间线（user 18 / reasoning 42 / tool 41 / assistant 4），1.18s；`hasMore=true` → notice「DSH 快照被截断」 |
+| 长会话回放 | 494 events → 139 条时间线，~1s；`hasMore=true` 只记日志（不弹 notice） |
 | 断线重连 | 客户端主动断开第 1 条连接 → `connects=2, snapshots=2, errors=1, gaps=0` |
 | 实时过程（真机） | reasoning 1.43/1.60/1.72s；工具卡 running 1.96s → completed 4.99s；最终回复 5.87s |
 | 外部 steer 预算 | `DSH_STEER_BUDGET_MS` 默认 6 小时，关闭 idle 兜底，避免长外部轮次被误杀 |
@@ -142,7 +149,7 @@ WS 路径（`server/provider.ts` 直连本机 DSH）：
 ## 7. 未覆盖 / 局限
 
 - seq 重置只有单测与恢复策略，没有真实 DSH 重启样本。
-- 快照窗口固定（实测 `maxMessages` 调到 2000 仍是 342 条、`hasMore=true`）；超长历史会截断（有 notice）。
+- 快照窗口固定（实测 `maxMessages` 调到 2000 仍是 342 条、`hasMore=true`）；超长历史会截断（只记日志，不弹 notice）。
 - `session.revert` / `archive` / `unarchive` 未实现（DSH 无对应端点，显式 `request.failed`）；`prompt.command`、权限审批、MCP 未做。
 - 只支持 DSH 桌面版在运行；无 ACP / CLI / 无头模式（ACP 变体见 tag `v1.3.0`）。
 - 仅 2 个并发会话做过真机；更高并发未压测。
