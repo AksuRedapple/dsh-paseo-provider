@@ -26,7 +26,7 @@ export interface TurnState {
   onSnapshot(snapshot: { cursor?: number; hasMore?: boolean }): TurnAction[];
   onEvent(ev: DshEventLike): TurnAction[];
   onAssistantFrame(frame: any): TurnAction[];
-  onTick(at?: number): TurnAction[];
+  onTick(at?: number, opts?: { busy?: boolean }): TurnAction[];
 }
 
 export function createTurnState(opts: {

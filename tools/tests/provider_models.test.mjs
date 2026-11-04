@@ -105,10 +105,10 @@ test('provider-models: session.open 应用 config.model/thinkingOption', async (
   const events = [];
   conn.onEvent((e) => events.push(e));
 
+  // 新会话（无 persistence）才应用 Paseo 指定的模型/档位
   await conn.send({
     type: 'session.open', requestId: 'r1', sessionId: 'p2',
     config: { cwd: '/tmp', model: 'prov-a::mock-pro', thinkingOption: 'low' },
-    persistence: { version: 1, data: { sessionId: 'mock-session' } },
     history: 'skip',
   });
   const start = Date.now();
@@ -123,6 +123,35 @@ test('provider-models: session.open 应用 config.model/thinkingOption', async (
   const cfg = events.find((e) => e.type === 'session.config')?.config;
   assert.equal(cfg?.model, 'prov-a::mock-pro');
   assert.equal(cfg?.thinkingOption, 'low');
+});
+
+test('provider-models: 已有会话 open 不覆盖 DSH 模型（导入安全）', async (t) => {
+  const sessions = [{
+    sessionId: 'mock-session',
+    projections: { values: { modelSelection: { next: { provider: 'prov-a', model: 'mock-flash' } } } },
+  }];
+  const mock = await startMockDsh(() => {}, { sessions });
+  process.env.DSH_BASE = `http://127.0.0.1:${mock.port}`;
+  process.env.DSH_MUX = `ws://127.0.0.1:${mock.port}`;
+  t.after(() => mock.close());
+
+  const { createProvider } = await import('../../server/provider.ts');
+  const conn = await createProvider().connect({});
+  const events = [];
+  conn.onEvent((e) => events.push(e));
+
+  await conn.send({
+    type: 'session.open', requestId: 'r1', sessionId: 'p1',
+    config: { cwd: '/tmp', model: 'prov-a::mock-pro', thinkingOption: 'low' },
+    persistence: { version: 1, data: { sessionId: 'mock-session' } },
+    history: 'skip',
+  });
+  await new Promise((r) => setTimeout(r, 300));
+
+  assert.equal(mock.calls.filter((c) => c.method === 'session/selectModel').length, 0,
+    'existing session model must not be overridden at open');
+  const cfg = events.find((e) => e.type === 'session.config')?.config;
+  assert.equal(cfg?.model, 'prov-a::mock-flash');
 });
 
 test('provider-models: session.open 同步 DSH 标题并回写新会话 title', async (t) => {

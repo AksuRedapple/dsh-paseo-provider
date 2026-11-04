@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.5.0 — 2026-11-04
+
+- Goal cards are emitted once per open from session projections. Historical `goal/change` revisions no longer add duplicate task cards (Paseo appends a new todo card whenever its content differs; same-id merging only applies to text streams).
+- Long DSH turns are no longer ended early: the idle fallback is skipped while a tool is pending, its threshold is ~10 minutes, and the turn budget is 6 hours. Fixes the Paseo timer freezing at the first long tool gap (a real goal turn ran 25m36s while Paseo recorded 19s).
+- Snapshot truncation (`hasMore=true`) is logged instead of shown as a notice; the window is truncated on almost every open, so the notice was pure noise.
+- Opening an existing session no longer writes Paseo's `config.model` / `thinkingOption` back to DSH. Imports used to clobber the session's model with the catalog default; explicit switches still go through `session.configure`, and new sessions still apply the open-time config.
+- Tests: 46 tests / 8 files.
+
 ## 2.4.1 — 2026-11-03
 
 - Refresh the goal/todos cards from projections on every prompt, so already-open sessions show the current goal without reopening.

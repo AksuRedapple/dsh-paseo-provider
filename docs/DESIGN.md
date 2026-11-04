@@ -89,18 +89,18 @@ follow.close();
              │ echo(user/message)
           running
        ┌─────┼───────────────┐
-  turn/end  replyText+idle5   deadline(120s)
-       │         │                │
-    completed  completed        timeout
+  turn/end  replyText+idle600(!busy)  deadline(6h)
+       │         │                        │
+    completed  completed                timeout
 ```
 
 规则：
 
 - **权威收工**：`turn/end` → `done(completed)`，原因取 `data.reason.kind`。
-- **旧版兜底**：没有 `turn/end` 时，出现带正文的 `assistant/message` 且连续 5 个 tick 无新事件 → `done(completed)`。
+- **旧版兜底**：没有 `turn/end` 时，出现带正文的 `assistant/message` 且连续 600 个 tick（约 10 分钟）无新事件 → `done(completed)`；有未结算的工具时**不数空闲**（2026-11-04 真机：goal 轮次里的长工具让 5s 兜底误收工，Paseo 计时冻结在 19s）。
 - **回复判定**：只有 `assistant/message` 里存在 `text` block 才算回复；tool-call 消息不算。
 - **回声抑制**：`waitEcho` 阶段只寻找匹配本次 prompt 的 `user/message`，找到后返回其 seq；该事件不进入时间线。
-- **超时**：总预算 120s；echo 预算 15s。
+- **超时**：总预算 6h（goal 轮次实测可跑 25 分钟）；echo 预算 15s。外部 steer 可用 `DSH_STEER_BUDGET_MS` 覆盖。
 - **turn 事件**：`turn/start` → `session.turn(started)`；`turn/end` → `session.turn(completed|failed|canceled)`。
 
 `assistant-stream` 映射（2026-11-03 实测）：
@@ -152,9 +152,9 @@ DSH 会把 system-reminder、记忆注入、时间戳等以 `user/message` 形�
 |---|---|
 | WS 断开 | 退避重连；snapshot 去重；重连期间事件可能缺失 → `notice` |
 | seq 重置（DSH 重启） | `reset` 通知，cursor 重建基线，不回放 |
-| 快照截断 | `truncated` 通知；实时流仍从 cursor 继续 |
+| 快照截断 | 只在日志记录（DSH 快照窗口几乎总是 hasMore；不弹 notice），实时流仍从 cursor 继续 |
 | 未知事件 | 首次警告 + 计数，不中断 |
-| turn 无结束信号 | 120s 超时，发 `prompt_result(failed)` |
+| turn 无结束信号 | 无挂起工具且静默 10 分钟 → 兜底 completed；否则 6h 超时 `prompt_result(failed)` |
 | 工具无结果 | 60s 或 turn 结束时结算为 failed |
 
 ## 7. 测试策略

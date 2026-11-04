@@ -6,6 +6,10 @@
  */
 
 export const TIMELINE_EVENTS = new Set(['user/message', 'assistant/message', 'tool/call', 'tool/result', 'todo/write', 'goal/change']);
+
+/** goal 轮次可能跑几十分钟；预算只是防挂死的最后闸门，不能按普通请求的 2 分钟算。 */
+const DEFAULT_BUDGET_MS = 6 * 60 * 60_000;
+const DEFAULT_IDLE_TICKS = 600; // 约 10 分钟完全静默（且没有挂起工具）才兜底收工
 export const TURN_EVENTS = new Set(['turn/start', 'turn/end']);
 export const IGNORED_EVENTS = new Set([
   'step/start', 'step/end', 'assistant/attempt',
@@ -57,8 +61,8 @@ export function createTurnState(opts) {
     startSeq,
     now,
     echoTimeoutMs = 15_000,
-    budgetMs = 120_000,
-    replyIdleTicks = 5,
+    budgetMs = DEFAULT_BUDGET_MS,
+    replyIdleTicks = DEFAULT_IDLE_TICKS,
     startPhase = 'waitEcho',
     noticeTruncation = true,
   } = opts;
@@ -177,8 +181,9 @@ export function createTurnState(opts) {
       return out.splice(0);
     },
 
-    /** 调用方每 tickMs 调一次；驱动 echo 超时、总超时、无 turn/end 的兜底收工。 */
-    onTick(at = Date.now()) {
+    /** 调用方每 tickMs 调一次；驱动 echo 超时、总超时、无 turn/end 的兜底收工。
+     *  busy=true（有未结算的工具）时不数空闲：长 bash/构建期间 DSH 可能长时间静默。 */
+    onTick(at = Date.now(), { busy = false } = {}) {
       if (phase === 'done') return out.splice(0);
       if (phase === 'waitEcho' && at >= echoDeadline) {
         phase = 'running';
@@ -186,11 +191,12 @@ export function createTurnState(opts) {
         push({ type: 'echo_timeout', seq: lastSeq });
       }
       if (at >= deadline) {
-        notice('本轮流式预算耗尽（120s）');
+        const mins = Math.round(budgetMs / 60_000);
+        notice(`本轮流式预算耗尽（${mins >= 60 ? `${Math.round(mins / 60)} 小时` : `${mins} 分钟`}）`);
         done('timeout');
         return out.splice(0);
       }
-      if (phase === 'running' && sawReplyText) {
+      if (phase === 'running' && sawReplyText && !busy) {
         idle++;
         if (idle >= replyIdleTicks) done('completed');
       }

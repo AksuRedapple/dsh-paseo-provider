@@ -107,9 +107,10 @@ node --test tools/tests/provider_stream.test.mjs
 - **必须有 DSH 桌面版在运行**；无头/CLI 用户请使用官方 ACP 方案（本仓库 v1.3.0 及以前提供过 ACP 适配器）。
 - 真机只在 macOS + Node 26 验证；Windows/Linux 需要显式 `DSH_WEB_LOG` 或 `DSH_BASE`。
 - DSH 是私有协议；rc 升级可能改变日志/字段，未知事件会告警而不是猜测。
-- 快照窗口由 DSH 控制，超长历史会截断（有 notice，不分页）。
+- 快照窗口由 DSH 控制，超长历史会截断（只记日志，不弹 notice，不分页）。
 - 权限审批、MCP、斜杠命令、revert/archive 未做（DSH desktop preset 自动执行 / 无对应端点）。
-- 目标 DSH 会话正在运行（桌面版/其他客户端）时，默认把消息 **steer 插入当前轮次**；外部轮次可能很长，steer 的预算是 30 分钟（`DSH_STEER_BUDGET_MS`），且不会用 idle 兜底提前收工。设置 `DSH_RUNNING_MODE=fail` 可改为快速失败（`dsh/busy`）。
+- 目标 DSH 会话正在运行（桌面版/其他客户端）时，默认把消息 **steer 插入当前轮次**；外部轮次可能很长，steer 的预算是 6 小时（`DSH_STEER_BUDGET_MS`），且不会用 idle 兜底提前收工。设置 `DSH_RUNNING_MODE=fail` 可改为快速失败（`dsh/busy`）。
+- goal 轮次可以跑几十分钟；普通轮次的总预算为 6 小时，idle 兜底只在没有挂起工具时生效（防止长工具被误判为本轮结束）。
 - DSH 自动改标题（`session/title` 事件）不会实时同步到 Paseo（Paseo 契约没有标题更新事件）；重新打开时以 DSH 标题为准。
 
 ## License

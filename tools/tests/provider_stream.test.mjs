@@ -395,6 +395,26 @@ test('state-2: truncated and reset notices come from snapshots', () => {
   assert.deepEqual([reset.from, reset.to], [10, 3]);
 });
 
+test('state-4: idle fallback is skipped while a tool is pending', () => {
+  const st = createTurnState({ promptText: '', startSeq: 0, now: 0, startPhase: 'running', replyIdleTicks: 3 });
+  st.onEvent(assistantMsg(1, 'answer'));
+  for (let i = 1; i <= 10; i++) {
+    const acts = st.onTick(i * 1000, { busy: true });
+    assert.ok(!acts.some((a) => a.type === 'done'), 'busy ticks must not finish the turn');
+  }
+  let done;
+  for (let i = 1; i <= 3; i++) {
+    done = st.onTick(20_000 + i * 1000, { busy: false }).find((a) => a.type === 'done');
+  }
+  assert.equal(done?.reason, 'completed');
+});
+
+test('state-5: default budget survives a long goal turn', () => {
+  const st = createTurnState({ promptText: '', startSeq: 0, now: 0, startPhase: 'running' });
+  const acts = st.onTick(30 * 60_000);
+  assert.ok(!acts.some((a) => a.type === 'done' && a.reason === 'timeout'));
+});
+
 test('state-3: injected context user messages are not emitted; real user messages are', () => {
   const st = createTurnState({ promptText: 'hello', startSeq: 0, now: 0 });
   st.onEvent(userMsg(1, 'hello')); // echo
@@ -511,6 +531,49 @@ test('run-3: pending tool is settled by the 60s timeout sweep', async () => {
     .find((i) => i.status === 'failed');
   assert.ok(failed, 'pending tool must be settled');
   assert.match(String(failed.error?.message), /timeout/);
+});
+
+test('run-6: long tool silence does not finish the turn via idle fallback', async () => {
+  const t0 = 1_000_000;
+  const started = Date.now();
+  const fakeNow = () => t0 + (Date.now() - started) * 2000;
+  let closed = false;
+  let wake;
+  const seqs = [
+    { type: 'assistant/message', seq: 2, time: t0,
+      data: { turn: 1, step: 1, message: { content: [{ type: 'text', text: 'working on it' }] } } },
+    { type: 'tool/call', seq: 3, time: t0 + 10,
+      data: { callId: 'c1', name: 'bash', arguments: '{}' } },
+  ];
+  let i = 0;
+  const fakeFollow = {
+    ready: Promise.resolve({ cursor: 1, hasMore: false, events: [] }),
+    close() { closed = true; wake?.({ value: undefined, done: true }); },
+    [Symbol.asyncIterator]() {
+      return {
+        next: () => {
+          if (closed) return Promise.resolve({ value: undefined, done: true });
+          if (i < seqs.length) return Promise.resolve({ value: { kind: 'event', event: seqs[i++] }, done: false });
+          return new Promise((resolve) => { wake = resolve; });
+        },
+      };
+    },
+  };
+  const ctl = new AbortController();
+  setTimeout(() => ctl.abort(), 250);
+  const emits = [];
+  const { reason } = await runTurn('paseo-12', 'dsh-12', 'hello', (e) => emits.push(e), {
+    follow: () => fakeFollow,
+    prompt: async () => {},
+    now: fakeNow,
+    tickMs: 5,
+    budgetMs: 60 * 60_000,
+    replyIdleTicks: 2,
+    toolTimeoutMs: 60_000,
+    signal: ctl.signal,
+  });
+  // 旧逻辑会在 2 个 tick（约 2s 虚拟时间）后以 completed 收工；正确行为是一直等到 abort
+  assert.equal(reason, 'canceled', 'must not finish while the tool is still pending');
 });
 
 test('run-4: assistant-stream preview is emitted and the final duplicate is skipped', async () => {

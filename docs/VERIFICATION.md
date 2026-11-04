@@ -125,9 +125,10 @@ WS 路径（`server/provider.ts` 直连本机 DSH）：
 | 长会话回放 | 482 events → 105 条时间线（user 18 / reasoning 42 / tool 41 / assistant 4），1.18s；`hasMore=true` → notice「DSH 快照被截断」 |
 | 断线重连 | 客户端主动断开第 1 条连接 → `connects=2, snapshots=2, errors=1, gaps=0` |
 | 实时过程（真机） | reasoning 1.43/1.60/1.72s；工具卡 running 1.96s → completed 4.99s；最终回复 5.87s |
-| 外部 steer 预算 | `DSH_STEER_BUDGET_MS` 默认 30 分钟，关闭 idle 兜底，避免长外部轮次被 120s 误杀 |
+| 外部 steer 预算 | `DSH_STEER_BUDGET_MS` 默认 6 小时，关闭 idle 兜底，避免长外部轮次被误杀 |
+| 长 goal 轮次 | 真机 turn 195 运行 25m36s；旧逻辑被 5s idle 兜底在第 19s 收工（Paseo 计时冻结）。现在有挂起工具时不数空闲，预算 6h |
 | Goal 卡片（真机） | ssot 会话打开：`dsh-goal` 卡片 status=in_progress，文本为 objective 前 300 字 + 轮次；`goal/change` 实时更新 |
-| 截断提示 | 打开/回放历史时提示一次；每轮 follow 的 `hasMore` 不再重复弹 notice（`provider-mock` 断言） |
+| 截断提示 | 快照 `hasMore` 只记日志，不再弹 notice（`provider_capabilities` 断言） |
 | open 指定模型 | `paseo agent run --model deepseek-official::deepseek-v4-pro --thinking low` → inspect 显示 Model/Thinking 均生效 |
 | 标题同步 | `--title TITLE-E2E-OK` → DSH `session/list` 中该会话标题为 `TITLE-E2E-OK`；打开已有会话使用 DSH 标题 |
 | Paseo 0.15 | 临时 0.15.0 daemon（127.0.0.1:16767，独立 home）加载插件 running；`agent run` 返回 `PASEO15-OK`，模型/usage 正常 |

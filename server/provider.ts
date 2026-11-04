@@ -185,7 +185,11 @@ export function createProvider() {
                     },
                   });
                 }
-                if (target || (requestedThinking && model)) {
+                // 已有会话（persistence）以 DSH 为准，open 时不应用 Paseo 的配置：
+                // 导入会话时 Paseo 会填 catalog 默认模型，之前会把它写回 DSH，改掉会话原模型。
+                // 用户显式切换走 session.configure；新会话仍应用 open 时的 model/thinking。
+                const existingSession = Boolean(input.persistence?.data?.sessionId);
+                if (!existingSession && (target || (requestedThinking && model))) {
                   const provider = target?.provider ?? model!.provider;
                   const modelId = target?.model ?? model!.model;
                   const effort = requestedThinking || model?.reasoningEffort;
@@ -221,11 +225,22 @@ export function createProvider() {
                   emit({ type: 'session.config', sessionId: sid, config: toProviderConfig(cat, model) });
                 }
                 if (info.usage) emit({ type: 'session.usage', sessionId: sid, usage: info.usage });
-                if (info.goal) {
-                  const goalItem = goalTodoItem(info.goal.goal, info.goal.roundsStarted);
-                  if (goalItem) emit({ type: 'timeline.item', sessionId: sid, item: goalItem });
+                const emitGoal = () => {
+                  if (!info.goal) return false;
+                  const item = goalTodoItem(info.goal.goal, info.goal.roundsStarted);
+                  if (!item) return false;
+                  emit({ type: 'timeline.item', sessionId: sid, item });
+                  return true;
+                };
+                const emitTodos = () => {
+                  if (!info.todos) return false;
+                  emit({ type: 'timeline.item', sessionId: sid, item: { type: 'todo', id: 'dsh-todo', items: info.todos } });
+                  return true;
+                };
+                if (input.history !== 'replay') {
+                  emitGoal();
+                  emitTodos();
                 }
-                if (info.todos) emit({ type: 'timeline.item', sessionId: sid, item: { type: 'todo', id: 'dsh-todo', items: info.todos } });
                 if (info.running) {
                   emit({
                     type: 'session.notice',
@@ -234,31 +249,24 @@ export function createProvider() {
                       id: `running-${Date.now()}`,
                       severity: 'warning',
                       title: 'DSH',
-                      description: '该 DSH 会话正在运行（可能来自 DSH 桌面版或其他客户端）；发送消息会被拒绝，直到当前轮结束',
+                      description: '该 DSH 会话正在运行（可能来自 DSH 桌面版或其他客户端）；在此发送消息会插入当前轮次（steer）',
                     },
                   });
                 }
 
                 if (input.history === 'replay' && input.persistence?.data?.sessionId) {
                   const snap = await fetchSessionSnapshot(dshId);
+                  let sawTodo = false;
                   if (snap.hasMore) {
+                    // DSH 的快照窗口几乎总是 hasMore；这是内部细节，只记日志不弹 notice
                     console.error('[dsh] replay snapshot truncated at cursor', snap.cursor);
-                    emit({
-                      type: 'session.notice',
-                      sessionId: sid,
-                      notice: {
-                        id: `replay-trunc-${Date.now()}`,
-                        severity: 'warning',
-                        title: 'DSH',
-                        description: 'DSH 快照被截断（hasMore=true），历史不完整；实时流不受影响',
-                      },
-                    });
                   }
                   const events = snap.events;
                   console.error('[dsh] replay events', events.length);
                   let n = 0;
                   const pending = new Map<string, any>();
                   for (const ev of events) {
+                    if (ev.type === 'todo/write') sawTodo = true;
                     for (const item of toTimeline(ev, pending)) {
                       emit({
                         type: 'timeline.item',
@@ -270,6 +278,11 @@ export function createProvider() {
                     }
                   }
                   console.error('[dsh] timeline items emitted', n);
+                  // goal 是当前状态而不是事件流：历史里 create/revise/complete 每个 revision
+                  // 都发卡会让刷新后的时间线堆出多张目标卡，只保留 projections 的一张。
+                  emitGoal();
+                  // todo 若历史里没有（或被截断），用 projections 补一张
+                  if (!sawTodo) emitTodos();
                 }
 
                 emit({ type: 'session.ready', sessionId: sid, requestId: input.requestId });
@@ -335,14 +348,6 @@ export function createProvider() {
                 // 默认 steer 插进当前轮次；DSH_RUNNING_MODE=fail 可改回快速失败。
                 const info = await sessionInfo(dshId).catch(() => null);
                 const externalRunning = info?.running === true;
-                // 已打开的旧会话也补上 goal/todos（同一 id，Paseo 会原地更新）
-                if (info?.goal) {
-                  const goalItem = goalTodoItem(info.goal.goal, info.goal.roundsStarted);
-                  if (goalItem) emit({ type: 'timeline.item', sessionId: input.sessionId, item: goalItem });
-                }
-                if (info?.todos) {
-                  emit({ type: 'timeline.item', sessionId: input.sessionId, item: { type: 'todo', id: 'dsh-todo', items: info.todos } });
-                }
                 const runningMode = (process.env.DSH_RUNNING_MODE || 'steer').toLowerCase();
                 if (externalRunning && runningMode === 'fail') {
                   emit({
@@ -385,10 +390,10 @@ export function createProvider() {
                   signal: ctl.signal,
                   content: blocks,
                   mode: steerExternal ? 'steer' : 'queue',
-                  // 外部轮次可能很长：不做 120s 预算、也不要用 idle 兜底提前收工
+                  // 外部轮次可能很长：放宽预算、也不用 idle 兜底提前收工
                   ...(steerExternal
                     ? {
-                        budgetMs: Number(process.env.DSH_STEER_BUDGET_MS) || 30 * 60_000,
+                        budgetMs: Number(process.env.DSH_STEER_BUDGET_MS) || 6 * 60 * 60_000,
                         replyIdleTicks: 1_000_000,
                       }
                     : {}),
@@ -757,13 +762,6 @@ function toTimeline(ev: DshEvent, pending: Map<string, any>): any[] {
       .filter((t: any) => t.text);
     // 固定 id：Paseo 按 id 合并，连续 todo/write 只更新同一条
     out.push({ type: 'todo', id: 'dsh-todo', items });
-  } else if (ev.type === 'goal/change') {
-    if (d.operation === 'clear' || !d.goal) {
-      out.push({ type: 'todo', id: 'dsh-goal', items: [] });
-    } else {
-      const item = goalTodoItem(d.goal, d.roundsStarted);
-      if (item) out.push(item);
-    }
   } else if (ev.type === 'tool/call') {
     const callId = String(d.callId || ev.seq);
     pending.set(callId, { d, seq: ev.seq, time: ev.time });
@@ -838,7 +836,7 @@ function settleToolFailure(callId: string, p: any, paseoId: string, emit: Emit, 
 
 function flushPending(pending: Map<string, any>, paseoId: string, emit: Emit) {
   for (const [callId, p] of pending) {
-    settleToolFailure(callId, p, paseoId, emit, 'tool result not received before turn end');
+    if (!p.settled) settleToolFailure(callId, p, paseoId, emit, 'tool result not received before turn end');
   }
   pending.clear();
 }
@@ -1038,12 +1036,14 @@ export async function runTurn(
     timer = setInterval(() => {
       const at = now();
       for (const [callId, p] of [...pending]) {
-        if (p.time && at - p.time > (deps.toolTimeoutMs ?? 60_000)) {
+        if (!p.settled && p.time && at - p.time > (deps.toolTimeoutMs ?? 60_000)) {
           settleToolFailure(callId, p, paseoId, emit, 'tool result timeout (60s)');
-          pending.delete(callId);
+          // 只结算卡片，不把工具从 pending 里摘掉：它可能还在跑，
+          // 摘掉会让 idle 兜底把长工具误判成本轮结束。
+          p.settled = true;
         }
       }
-      handle(state.onTick(at));
+      handle(state.onTick(at, { busy: pending.size > 0 }));
       if (state.phase === 'done') { try { follow.close(); } catch {} }
     }, deps.tickMs ?? 1000);
 

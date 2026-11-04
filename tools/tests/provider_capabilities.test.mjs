@@ -145,7 +145,18 @@ test('capabilities: history replay 重建 user/assistant/tool/todo', async (t) =
       data: { operation: 'create', roundsStarted: 2,
         goal: { id: 'g1', revision: 1, objective: 'Ship the thing', phase: 'active', maxGoalRounds: 10 } } } },
   ];
-  const mock = await startMockDsh(() => {}, { records, hasMore: true });
+  const sessions = [{
+    sessionId: 'mock-session',
+    projections: {
+      values: {
+        goal: {
+          goal: { id: 'g1', revision: 2, objective: 'Ship the thing', phase: 'completed', maxGoalRounds: 10 },
+          roundsStarted: 3,
+        },
+      },
+    },
+  }];
+  const mock = await startMockDsh(() => {}, { records, hasMore: true, sessions });
   process.env.DSH_BASE = `http://127.0.0.1:${mock.port}`;
   process.env.DSH_MUX = `ws://127.0.0.1:${mock.port}`;
   t.after(() => mock.close());
@@ -174,11 +185,14 @@ test('capabilities: history replay 重建 user/assistant/tool/todo', async (t) =
   const todo = items.find((i) => i.type === 'todo' && i.id === 'dsh-todo');
   assert.equal(todo?.items?.length, 2);
   assert.equal(todo?.items?.[0]?.completed, true);
-  const goal = items.find((i) => i.type === 'todo' && i.id === 'dsh-goal');
-  assert.match(goal?.items?.[0]?.text || '', /Ship the thing/);
+  // goal 只从 projections 出一张卡；历史里的 create/complete 不重复发
+  const goals = items.filter((i) => i.type === 'todo' && i.id === 'dsh-goal');
+  assert.equal(goals.length, 1, 'exactly one goal card expected');
+  assert.match(goals[0].items?.[0]?.text || '', /Ship the thing/);
+  assert.equal(goals[0].items?.[0]?.completed, true);
 
-  const truncated = events.find((e) => e.type === 'session.notice' && /截断/.test(e.notice?.description || ''));
-  assert.ok(truncated, 'replay truncation notice expected');
+  // 快照截断是内部细节：只记日志，不应弹 notice
+  assert.ok(!events.some((e) => e.type === 'session.notice' && /截断/.test(e.notice?.description || '')));
 });
 
 
