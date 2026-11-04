@@ -1,5 +1,9 @@
 # Changelog
 
+## 2.4.1 — 2026-11-03
+
+- Refresh the goal/todos cards from projections on every prompt, so already-open sessions show the current goal without reopening.
+
 ## 2.4.0 — 2026-11-03
 
 - Map DSH `goal/change` to a persistent task card and restore the current goal/todos from session projections when opening a session.

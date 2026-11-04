@@ -1,6 +1,6 @@
 {
   "name": "dsh-paseo-provider",
-  "version": "2.4.0",
+  "version": "2.4.1",
   "private": false,
   "description": "Paseo provider for the DeepSeek Harness desktop app: persistent WS mux streaming, model switching, plans/todos, images, steering.",
   "license": "MIT",

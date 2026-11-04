@@ -333,7 +333,16 @@ export function createProvider() {
                 }
                 // DSH 里可能已经有别的客户端在跑（例如桌面版/另一个 Paseo 连接）。
                 // 默认 steer 插进当前轮次；DSH_RUNNING_MODE=fail 可改回快速失败。
-                const externalRunning = await sessionRunning(dshId).catch(() => false);
+                const info = await sessionInfo(dshId).catch(() => null);
+                const externalRunning = info?.running === true;
+                // 已打开的旧会话也补上 goal/todos（同一 id，Paseo 会原地更新）
+                if (info?.goal) {
+                  const goalItem = goalTodoItem(info.goal.goal, info.goal.roundsStarted);
+                  if (goalItem) emit({ type: 'timeline.item', sessionId: input.sessionId, item: goalItem });
+                }
+                if (info?.todos) {
+                  emit({ type: 'timeline.item', sessionId: input.sessionId, item: { type: 'todo', id: 'dsh-todo', items: info.todos } });
+                }
                 const runningMode = (process.env.DSH_RUNNING_MODE || 'steer').toLowerCase();
                 if (externalRunning && runningMode === 'fail') {
                   emit({
@@ -619,16 +628,6 @@ async function sessionContextUsage(dshId: string) {
     return contextUsageOf(items.find((s) => s.sessionId === dshId));
   } catch {
     return null;
-  }
-}
-
-/** 会话是否正在运行（可能来自 DSH 桌面版 / 其他客户端）。 */
-async function sessionRunning(dshId: string): Promise<boolean> {
-  try {
-    const items = await listSessions();
-    return items.find((s) => s.sessionId === dshId)?.running === true;
-  } catch {
-    return false;
   }
 }
 
