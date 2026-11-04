@@ -71,6 +71,8 @@ export function createProvider() {
       const activeTurns = new Map<string, AbortController>();
       const activeTurnIds = new Map<string, string>();   // paseoSessionId → 正在跑的 turnId
       const sessionModels = new Map<string, ModelRef>(); // paseoSessionId → DSH 当前模型
+      // 每个 provider 连接独立：观察者 / 外部正在跑的回合（steer 复用 turnId）
+      const observerState: ObserverState = { observers: new Map(), observedTurns: new Map() };
       const emit: Emit = (e) => listeners.forEach((l) => l(e));
 
       return {
@@ -241,7 +243,9 @@ export function createProvider() {
                   emitGoal();
                   emitTodos();
                 }
-                if (info.running) {
+                // steer 模式下不再弹「会话正在运行」的常驻 notice（会过期）；
+                // 运行中的外部回合由 replay + 实时镜像来展示。fail 模式才需要提前警告。
+                if (info.running && (process.env.DSH_RUNNING_MODE || 'steer').toLowerCase() === 'fail') {
                   emit({
                     type: 'session.notice',
                     sessionId: sid,
@@ -249,11 +253,12 @@ export function createProvider() {
                       id: `running-${Date.now()}`,
                       severity: 'warning',
                       title: 'DSH',
-                      description: '该 DSH 会话正在运行（可能来自 DSH 桌面版或其他客户端）；在此发送消息会插入当前轮次（steer）',
+                      description: '该 DSH 会话正在运行（可能来自 DSH 桌面版或其他客户端）；发送消息会被拒绝，直到当前轮结束',
                     },
                   });
                 }
 
+                let openTurn: number | null = null;
                 if (input.history === 'replay' && input.persistence?.data?.sessionId) {
                   const snap = await fetchSessionSnapshot(dshId);
                   let sawTodo = false;
@@ -267,6 +272,8 @@ export function createProvider() {
                   const pending = new Map<string, any>();
                   for (const ev of events) {
                     if (ev.type === 'todo/write') sawTodo = true;
+                    if (ev.type === 'turn/start') openTurn = Number(ev.data?.turn) || 0;
+                    else if (ev.type === 'turn/end') openTurn = null;
                     for (const item of toTimeline(ev, pending)) {
                       emit({
                         type: 'timeline.item',
@@ -286,6 +293,14 @@ export function createProvider() {
                 }
 
                 emit({ type: 'session.ready', sessionId: sid, requestId: input.requestId });
+                // 导入时若回合仍在进行，先宣告 turn started，让 Paseo 显示 running；
+                // 之后由观察者把同一个 turn 关掉。
+                if (openTurn != null) {
+                  emit({ type: 'session.turn', sessionId: sid, turnId: `dsh-ext-${openTurn}`, state: 'started' });
+                }
+                // 只读镜像：DSH 桌面版/其他客户端发起的回合实时进入 Paseo
+                void startObserver(observerState, sid, dshId, emit,
+                  openTurn != null ? { n: openTurn, id: `dsh-ext-${openTurn}` } : undefined);
                 console.error('[dsh] emitted session.ready');
                 break;
               }
@@ -367,8 +382,11 @@ export function createProvider() {
                 const steerExternal = externalRunning;
                 // Paseo 的 plugin bridge 拿到 prompt_result(turn|steer) 才算 run 启动，
                 // 否则 60s 后按「run did not start」中止。turnId 由我们生成并贯穿整轮，
-                // 不依赖 DSH turn/start 的到达时机。
-                const turnId = steerExternal ? `dsh-steer-${Date.now()}` : `dsh-turn-${Date.now()}`;
+                // 不依赖 DSH turn/start 的到达时机。插话时复用观察者已知的 turnId。
+                const observedTurn = observerState.observedTurns.get(input.sessionId);
+                const turnId = steerExternal
+                  ? (observedTurn?.id ?? `dsh-steer-${Date.now()}`)
+                  : `dsh-turn-${Date.now()}`;
                 let turnStartReported = false;
                 const beginTurn = (kind: 'turn' | 'steer') => {
                   if (turnStartReported) return;
@@ -398,6 +416,8 @@ export function createProvider() {
                 // 持久 follow：snapshot 定基线 → 发 prompt → 消费 event/assistant-stream
                 // → turn/end 收工 → 最后才发 prompt_result。
                 // 不 await：让 interrupt/close 能在本轮运行期间被处理。
+                // 自有回合要独占 follow，先停掉只读镜像；回合结束后再恢复
+                stopObserver(observerState, input.sessionId);
                 const ctl = new AbortController();
                 activeTurns.set(input.sessionId, ctl);
                 let turnClosed = false;
@@ -474,6 +494,10 @@ export function createProvider() {
                   .finally(() => {
                     if (activeTurns.get(input.sessionId) === ctl) activeTurns.delete(input.sessionId);
                     activeTurnIds.delete(input.sessionId);
+                    observerState.observedTurns.delete(input.sessionId);
+                    if (openSessions.get(input.sessionId) === dshId) {
+                      void startObserver(observerState, input.sessionId, dshId, emit);
+                    }
                   });
                 break;
               }
@@ -557,6 +581,8 @@ export function createProvider() {
               case 'session.close': {
                 activeTurns.get(input.sessionId)?.abort();
                 activeTurns.delete(input.sessionId);
+                stopObserver(observerState, input.sessionId);
+                observerState.observedTurns.delete(input.sessionId);
                 openSessions.delete(input.sessionId);
                 sessionModels.delete(input.sessionId);
                 emit({ type: 'session.closed', sessionId: input.sessionId });
@@ -609,6 +635,8 @@ export function createProvider() {
 
         async close() {
           listeners.length = 0;
+          for (const id of [...observerState.observers.keys()]) stopObserver(observerState, id);
+          observerState.observedTurns.clear();
         },
       };
     },
@@ -854,11 +882,221 @@ function settleToolFailure(callId: string, p: any, paseoId: string, emit: Emit, 
   });
 }
 
+type ObserverState = {
+  observers: Map<string, { stop: () => void }>;
+  /** 外部（DSH 桌面版等）正在进行的回合，供 steer 复用同一个 turnId。 */
+  observedTurns: Map<string, { n: number; id: string }>;
+};
+
+function stopObserver(state: ObserverState, paseoId: string) {
+  const o = state.observers.get(paseoId);
+  if (!o) return;
+  state.observers.delete(paseoId);
+  try { o.stop(); } catch {}
+}
+
+/** 只读实时镜像：会话打开后跟随 DSH 事件，把外部回合写进 Paseo 时间线。
+ *  不发送 prompt_result；自有回合（runTurn）开始前会停掉观察者，结束后再恢复。 */
+function startObserver(
+  state: ObserverState,
+  paseoId: string,
+  dshId: string,
+  emit: Emit,
+  initialTurn?: { n: number; id: string },
+) {
+  if (state.observers.has(paseoId)) return;
+  let closed = false;
+  let follow: ReturnType<typeof followSession> | null = null;
+  const entry = {
+    stop() {
+      if (closed) return;
+      closed = true;
+      try { follow?.close(); } catch {}
+    },
+  };
+  // 先同步登记，避免「open 后立刻 prompt」时观察者还没注册、stop 落空
+  state.observers.set(paseoId, entry);
+  if (initialTurn) state.observedTurns.set(paseoId, { ...initialTurn });
+  else state.observedTurns.delete(paseoId);
+  console.error('[dsh] observer start', dshId);
+
+  void (async () => {
+    const ep = await getDshEndpoint().catch(() => null);
+    if (closed) return;
+    let connect: ((url: string) => any) | undefined;
+    if (ep?.cookie) {
+      const { WebSocket: WsWebSocket } = await import('ws');
+      const cookie = ep.cookie;
+      connect = (url) => new WsWebSocket(url, { headers: { cookie } });
+    }
+    if (closed) return;
+    try {
+      follow = followSession(dshId, {
+        assistantStream: true,
+        readyTimeoutMs: 15_000,
+        ...(ep ? { url: ep.mux } : {}),
+        ...(connect ? { connect, headers: { cookie: ep?.cookie as string } } : {}),
+      });
+    } catch {
+      if (state.observers.get(paseoId) === entry) state.observers.delete(paseoId);
+      return;
+    }
+    if (closed) { try { follow.close(); } catch {} return; }
+
+    const preview = createPreviewStreamer(paseoId, emit);
+    const pending = new Map<string, any>();
+    let active: { n: number; id: string } | null = initialTurn ?? null;
+    try {
+      await follow.ready;
+      console.error('[dsh] observer ready', dshId);
+    } catch {
+      console.error('[dsh] observer not ready', dshId);
+      if (state.observers.get(paseoId) === entry) state.observers.delete(paseoId);
+      return;
+    }
+    for await (const msg of follow) {
+      if (closed) break;
+      if (msg.kind === 'assistant') {
+        preview.frame(msg.frame);
+        continue;
+      }
+      if (msg.kind !== 'event') continue; // snapshot/reset/gap 交给 follow 的静默重连
+      const ev = msg.event as DshEvent;
+      if (ev.type === 'user/message') {
+        const kind = (ev.data as any)?.source?.kind;
+        // 注入的 system-reminder/上下文不算用户消息（与 turn-state 同规则）
+        if (kind !== 'user' && kind !== 'agent') continue;
+      }
+      if (ev.type === 'goal/change') continue; // goal 是状态卡，只在 open 时出
+      if (ev.type === 'turn/start') {
+        preview.flush();
+        const n = Number((ev.data as any)?.turn);
+        active = { n: Number.isFinite(n) ? n : 0, id: `dsh-ext-${Number.isFinite(n) ? n : ev.seq}` };
+        state.observedTurns.set(paseoId, active);
+        emit({ type: 'session.turn', sessionId: paseoId, turnId: active.id, state: 'started' });
+        continue;
+      }
+      if (ev.type === 'turn/end') {
+        preview.flush();
+        const reason = (ev.data as any)?.reason?.kind;
+        const turnState = reason === 'completed' ? 'completed'
+          : (reason === 'canceled' || reason === 'aborted') ? 'canceled' : 'failed';
+        if (active) emit({ type: 'session.turn', sessionId: paseoId, turnId: active.id, state: turnState });
+        active = null;
+        state.observedTurns.delete(paseoId);
+        flushPending(pending, paseoId, emit);
+        continue;
+      }
+      const key = `${(ev.data as any)?.turn}:${(ev.data as any)?.step}`;
+      const items = toTimeline(ev, pending);
+      if (!items.length) continue;
+      preview.flush();
+      for (const item of items) {
+        if (item.type === 'assistant_message' && preview.hasText(key)) continue;
+        if (item.type === 'reasoning' && preview.hasReasoning(key)) continue;
+        emit({
+          type: 'timeline.item',
+          sessionId: paseoId,
+          item,
+          timestamp: ev.time ? new Date(ev.time).toISOString() : undefined,
+        });
+      }
+    }
+    if (state.observers.get(paseoId) === entry) {
+      state.observers.delete(paseoId);
+      state.observedTurns.delete(paseoId);
+    }
+  })();
+}
+
 function flushPending(pending: Map<string, any>, paseoId: string, emit: Emit) {
   for (const [callId, p] of pending) {
     if (!p.settled) settleToolFailure(callId, p, paseoId, emit, 'tool result not received before turn end');
   }
   pending.clear();
+}
+
+/** assistant-stream 实时预览：reasoning 首块立即发、之后每 ~40 字增量；正文按 block 落定。
+ *  Paseo bridge 按 item.id 只转发新增文本，所以 id 稳定 + 文本累计。 */
+function createPreviewStreamer(paseoId: string, emit: Emit) {
+  const st = {
+    step: '',
+    reasoning: '',
+    text: '',
+    tSeq: 0,
+    rAcc: new Map<string, string>(),
+    tAcc: new Map<string, string>(),
+  };
+  const emitReasoning = () => {
+    if (!st.step || !st.reasoning) return;
+    const prev = st.rAcc.get(st.step) || '';
+    if (st.reasoning === prev) return;
+    st.rAcc.set(st.step, st.reasoning);
+    emit({
+      type: 'timeline.item',
+      sessionId: paseoId,
+      item: { type: 'reasoning', id: `rs-${st.step}`, text: st.reasoning },
+    });
+  };
+  const emitText = () => {
+    if (!st.step || !st.text) return;
+    const text = st.text;
+    st.text = '';
+    st.tAcc.set(st.step, (st.tAcc.get(st.step) || '') + text);
+    emit({
+      type: 'timeline.item',
+      sessionId: paseoId,
+      item: { type: 'assistant_message', id: `as-${st.step}-${st.tSeq++}`, text },
+    });
+  };
+  const flush = () => {
+    emitReasoning();
+    emitText();
+  };
+  const frame = (f: any) => {
+    if (!f) return;
+    // usage chunk 可能不带 turn/step，先处理再进 step 守卫
+    if (f.type === 'chunk' && f.chunk?.type === 'usage') {
+      const usage = usageFromChunk(f.chunk);
+      if (usage) emit({ type: 'session.usage', sessionId: paseoId, usage });
+      return;
+    }
+    // chunk 帧本身不带 turn/step，只有 start 帧带；key 必须沿用 start 的值，
+    // 否则会和最终 assistant/message 的 key 对不上（实测曾退化成 "?:?" 导致重复）。
+    if (f.turn != null && f.step != null) {
+      const key = `${f.turn}:${f.step}`;
+      if (st.step && key !== st.step) {
+        flush();
+        st.reasoning = '';
+        st.text = '';
+      }
+      st.step = key;
+    }
+    if (!st.step) return;
+    if (f.type === 'chunk') {
+      const c = f.chunk || {};
+      const t = typeof c.text === 'string' ? c.text : '';
+      if (c.type === 'reasoning-delta' && t) {
+        st.reasoning += t;
+        const prevLen = (st.rAcc.get(st.step) || '').length;
+        if (prevLen === 0 || st.reasoning.length - prevLen >= 40) emitReasoning();
+      } else if (c.type === 'text-delta' && t) {
+        // 正文攒到 block-end 一次落定：分块合并会在块边界插入换行，破坏最终排版。
+        st.text += t;
+      } else if (c.type === 'block-end' || c.type === 'finish') {
+        flush();
+      }
+    } else if (f.type === 'end') {
+      flush();
+    }
+  };
+  return {
+    frame,
+    flush,
+    hasText: (key: string) => st.tAcc.has(key),
+    textOf: (key: string) => st.tAcc.get(key) || '',
+    hasReasoning: (key: string) => st.rAcc.has(key),
+  };
 }
 
 /** 用持久 follow + 共用 turn 状态机跑完一轮；返回 done reason。 */
@@ -906,82 +1144,7 @@ export async function runTurn(
   let reason = 'completed';
   let timer: ReturnType<typeof setInterval> | null = null;
 
-  // assistant-stream 的实时预览：reasoning-delta / text-delta 按块刷出。
-  // Paseo daemon 会把连续的 reasoning/assistant 条目按 seq 合并成一条。
-  const preview = {
-    step: '',
-    reasoning: '',
-    text: '',
-    tSeq: 0,
-    rAcc: new Map<string, string>(),
-    tAcc: new Map<string, string>(),
-  };
-  // Paseo 的 provider bridge 会按 item.id 对 reasoning/assistant_message 做增量：
-  // 同 id 发累计文本，它只转发新增部分。用稳定 id + 累计文本才能实时流。
-  const emitReasoning = () => {
-    if (!preview.step || !preview.reasoning) return;
-    const prev = preview.rAcc.get(preview.step) || '';
-    if (preview.reasoning === prev) return;
-    preview.rAcc.set(preview.step, preview.reasoning);
-    emit({
-      type: 'timeline.item',
-      sessionId: paseoId,
-      item: { type: 'reasoning', id: `rs-${preview.step}`, text: preview.reasoning },
-    });
-  };
-  const emitText = () => {
-    if (!preview.step || !preview.text) return;
-    const text = preview.text;
-    preview.text = '';
-    preview.tAcc.set(preview.step, (preview.tAcc.get(preview.step) || '') + text);
-    emit({
-      type: 'timeline.item',
-      sessionId: paseoId,
-      item: { type: 'assistant_message', id: `as-${preview.step}-${preview.tSeq++}`, text },
-    });
-  };
-  const flushPreview = () => {
-    emitReasoning();
-    emitText();
-  };
-  const handlePreviewFrame = (f: any) => {
-    if (!f) return;
-    // usage chunk 可能不带 turn/step，先处理再进 step 守卫
-    if (f.type === 'chunk' && f.chunk?.type === 'usage') {
-      const usage = usageFromChunk(f.chunk);
-      if (usage) emit({ type: 'session.usage', sessionId: paseoId, usage });
-      return;
-    }
-    // chunk 帧本身不带 turn/step，只有 start 帧带；key 必须沿用 start 的值，
-    // 否则会和最终 assistant/message 的 key 对不上（实测曾退化成 "?:?" 导致重复）。
-    if (f.turn != null && f.step != null) {
-      const key = `${f.turn}:${f.step}`;
-      if (preview.step && key !== preview.step) {
-        flushPreview();
-        preview.reasoning = '';
-        preview.text = '';
-      }
-      preview.step = key;
-    }
-    if (!preview.step) return;
-    if (f.type === 'chunk') {
-      const c = f.chunk || {};
-      const t = typeof c.text === 'string' ? c.text : '';
-      if (c.type === 'reasoning-delta' && t) {
-        preview.reasoning += t;
-        // 首块立即发，之后每 40 字增量发一次（bridge 会按 id 只转发新增文本）
-        const prevLen = (preview.rAcc.get(preview.step) || '').length;
-        if (prevLen === 0 || preview.reasoning.length - prevLen >= 40) emitReasoning();
-      } else if (c.type === 'text-delta' && t) {
-        // 正文攒到 block-end 一次落定：分块合并会在块边界插入换行，破坏最终排版。
-        preview.text += t;
-      } else if (c.type === 'block-end' || c.type === 'finish') {
-        flushPreview();
-      }
-    } else if (f.type === 'end') {
-      flushPreview();
-    }
-  };
+  const preview = createPreviewStreamer(paseoId, emit);
 
   const onAbort = () => {
     reason = 'canceled';
@@ -1000,18 +1163,18 @@ export async function runTurn(
   const handle = (actions: ReturnType<ReturnType<typeof createTurnState>['onTick']>) => {
     for (const a of actions) {
       if (a.type === 'timeline') {
-        flushPreview();
+        preview.flush();
         const ev = a.event as DshEvent;
         const key = `${(ev.data as any)?.turn}:${(ev.data as any)?.step}`;
         for (const item of toTimeline(ev, pending)) {
           // 该 step 已有流式预览 → 最终件一律不再发，避免重复。
-          if (item.type === 'assistant_message' && preview.tAcc.has(key)) {
-            if (normText(item.text) !== normText(preview.tAcc.get(key) || '')) {
+          if (item.type === 'assistant_message' && preview.hasText(key)) {
+            if (normText(item.text) !== normText(preview.textOf(key))) {
               notice(`stream/final 文本不一致（step ${key}），以流式预览为准`);
             }
             continue;
           }
-          if (item.type === 'reasoning' && preview.rAcc.has(key)) continue;
+          if (item.type === 'reasoning' && preview.hasReasoning(key)) continue;
           emit({
             type: 'timeline.item',
             sessionId: paseoId,
@@ -1074,7 +1237,7 @@ export async function runTurn(
     for await (const msg of follow) {
       if (msg.kind === 'event') handle(state.onEvent(msg.event));
       else if (msg.kind === 'assistant') {
-        handlePreviewFrame(msg.frame);
+        preview.frame(msg.frame);
         handle(state.onAssistantFrame(msg.frame));
       } else if (msg.kind === 'snapshot') handle(state.onSnapshot(msg));
       else if (msg.kind === 'reset' || msg.kind === 'truncated') { /* state 已按 snapshot 发 notice */ }
@@ -1098,7 +1261,7 @@ export async function runTurn(
   } finally {
     deps.signal?.removeEventListener('abort', onAbort);
     if (timer) clearInterval(timer);
-    flushPreview();
+    preview.flush();
     try { follow.close(); } catch {}
     flushPending(pending, paseoId, emit);
   }

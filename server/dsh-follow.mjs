@@ -203,6 +203,8 @@ export function followSession(sessionId, opts = {}) {
       reconnectTimer = null;
       open();
     }, delay);
+    // 只读观察者可能长期重试；不要因为一个退避定时器把进程钉住
+    reconnectTimer.unref?.();
   };
 
   open();

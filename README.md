@@ -10,6 +10,7 @@
 - **端点/鉴权自动发现**：从 DSH 的 `dsh-web.log` 读取 launch token，本机换取 `dsh-auth` cookie，连 `127.0.0.1:8780`；不再依赖自建代理。
 - **生命周期完整**：`session.interrupt`（DSH `session/cancel`）、`session.close`、`session.can_stop_runtime`；取消后正确收轮。
 - **模型选择是实时的**：从 `session/modelCatalog` 拉模型目录（provider 分组 + reasoning efforts）；切换模型/思考档位真正写回 DSH。
+- **外部回合实时镜像**：会话打开后持续跟随 DSH mux；DSH 桌面版/其他客户端发起的回合会实时出现在 Paseo 时间线（只读）。Paseo 自己发消息时镜像自动让位，steer 时保持跟随。
 - **桌面版原生交互**：图片 prompt（DSH `mediaType`）、运行中 steer 插话（`mode:'steer'`）、`todo/write` → 时间线任务列表。
 - **实时过程**：thinking（reasoning-delta）边到边发；工具调用一开始就显示 running，结果回来再更新为 completed。
 - **Goal 可见**：DSH 的 `goal/change` 映射为时间线里的任务卡（Paseo 没有独立 goal 卡片，用 todo 项承载）；打开会话时从 projections 恢复当前 goal 和 todos。

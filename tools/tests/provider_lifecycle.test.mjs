@@ -158,6 +158,54 @@ test('lifecycle: run start is reported before a long turn ends', async (t) => {
   assert.equal(done.turnId, started.result.turnId);
 });
 
+test('lifecycle: observer mirrors an external turn after open', async (t) => {
+  const mock = await startMockDsh(() => {}, { sessions: [{ sessionId: 'mock-session' }] });
+  process.env.DSH_BASE = `http://127.0.0.1:${mock.port}`;
+  process.env.DSH_MUX = `ws://127.0.0.1:${mock.port}`;
+  t.after(() => mock.close());
+
+  const { createProvider } = await import('../../server/provider.ts');
+  const conn = await createProvider().connect({});
+  const events = [];
+  conn.onEvent((e) => events.push(e));
+
+  await conn.send({
+    type: 'session.open', requestId: 'r1', sessionId: 'p1',
+    config: { cwd: '/tmp' },
+    persistence: { version: 1, data: { sessionId: 'mock-session' } },
+    history: 'skip',
+  });
+  await waitFor(events, (e) => e.type === 'session.ready');
+
+  const send = async (value) => {
+    const start = Date.now();
+    while (Date.now() - start < 10_000) {
+      if (mock.send(value)) return;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    throw new Error('observer not connected');
+  };
+  const now = Date.now();
+  await send({ type: 'event', event: { type: 'turn/start', seq: 10, time: now, data: { turn: 9 } } });
+  await waitFor(events, (e) => e.type === 'session.turn' && e.state === 'started' && e.turnId === 'dsh-ext-9');
+
+  await send({ type: 'event', event: { type: 'user/message', seq: 11, time: now,
+    data: { content: [{ type: 'text', text: 'external question' }], source: { kind: 'user' } } } });
+  await send({ type: 'assistant-stream', frame: { type: 'start', turn: 9, step: 1 } });
+  await send({ type: 'assistant-stream', frame: { type: 'chunk', chunk: { type: 'text-delta', text: 'external answer' } } });
+  await send({ type: 'assistant-stream', frame: { type: 'chunk', chunk: { type: 'finish' } } });
+  await send({ type: 'event', event: { type: 'assistant/message', seq: 12, time: now,
+    data: { turn: 9, step: 1, message: { content: [{ type: 'text', text: 'external answer' }] } } } });
+  await send({ type: 'event', event: { type: 'turn/end', seq: 13, time: now,
+    data: { turn: 9, reason: { kind: 'completed' } } } });
+
+  const done = await waitFor(events, (e) => e.type === 'session.turn' && e.state === 'completed');
+  assert.equal(done.turnId, 'dsh-ext-9');
+  const items = events.filter((e) => e.type === 'timeline.item').map((e) => e.item);
+  assert.ok(items.some((i) => i.type === 'user_message' && i.text === 'external question'));
+  assert.ok(items.some((i) => i.type === 'assistant_message' && i.text === 'external answer'));
+});
+
 test('lifecycle: 外部运行的会话默认 steer 插入当前轮次', async (t) => {
   delete process.env.DSH_RUNNING_MODE;
   const mock = await startMockDsh((ws, streamId) => {

@@ -136,6 +136,16 @@ follow.close();
 
 DSH 会把 system-reminder、记忆注入、时间戳等以 `user/message` 形式塞进事件流；它们没有 `source.kind=user/agent`，因此**不得进入时间线**（2026-11-03 真机发现：不过滤会一次冒出 5 条伪用户消息）。
 
+## 5.0 只读实时镜像（observer）
+
+`session.open` 之后启动一个持久 `followSession`，把外部回合写进 Paseo：
+
+- 每条 event → `toTimeline`（reasoning/assistant 走同一个 preview streamer；`user/message` 只保留 `source.kind=user/agent`）。
+- `turn/start` → `session.turn(started)`，turnId 固定为 `dsh-ext-<turn>`；`turn/end` → 对应的 completed/canceled/failed，并结算未返回的工具卡。
+- 打开时若回合仍在进行：replay 里记住未闭合的 turn，在 `session.ready` 后补发 started，观察者负责关掉。
+- `session.prompt`（自有回合）前停掉观察者，回合结束后恢复；显式 steer 不打断观察者。
+- observer 按 provider 连接隔离；`session.close` 时停止。
+
 ## 5.1 生命周期
 
 | 输入 | 行为 |

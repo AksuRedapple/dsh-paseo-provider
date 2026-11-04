@@ -82,17 +82,20 @@ export async function startMockDsh(onPrompt, opts = {}) {
     });
   });
   const wss = new WebSocketServer({ server });
+  let snapshotSent = false;
   wss.on('connection', (ws, req) => {
     if (requiredCookie && req.headers.cookie !== requiredCookie) {
       ws.close(1008, 'unauthorized');
       return;
     }
     currentWs = ws;
+    snapshotSent = false;
     ws.on('message', (raw) => {
       let m;
       try { m = JSON.parse(raw.toString()); } catch { return; }
       if (m.type !== 'open') return;
       streamId = m.streamId;
+      snapshotSent = true;
       ws.send(JSON.stringify({
         type: 'item', streamId,
         value: { type: 'snapshot', cursor: opts.cursor ?? 0, hasMore: opts.hasMore === true, records },
@@ -103,8 +106,15 @@ export async function startMockDsh(onPrompt, opts = {}) {
   return {
     port: server.address().port,
     calls,
+    /** 观察者测试用：向当前连接推一条 mux item；未就绪时返回 false。 */
+    send(value) {
+      if (!currentWs || currentWs.readyState !== 1 || !streamId || !snapshotSent) return false;
+      currentWs.send(JSON.stringify({ type: 'item', streamId, value }));
+      return true;
+    },
     setCookie(value) { requiredCookie = value; },
     close() {
+      for (const c of wss.clients) { try { c.close(); } catch {} }
       try { wss.close(); } catch {}
       try { server.close(); } catch {}
     },

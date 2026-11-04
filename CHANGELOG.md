@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.6.0 — 2026-11-04
+
+- Live read-only mirroring: after a session is opened, a persistent follow keeps streaming DSH native turns into the Paseo timeline. Turns started in DSH Desktop (or any other client) now appear in Paseo as they happen, with reasoning, assistant text, tool cards, usage, and turn start/end.
+- If the session is opened while a turn is already running, that turn is announced as started and closed when DSH emits `turn/end`.
+- The mirror yields to Paseo-initiated turns: it is stopped before `runTurn` and restarted afterwards, so the same events are never processed twice. Explicit steer keeps the mirror alive.
+- The open-time "session is running" notice is now only emitted in `DSH_RUNNING_MODE=fail`; in steer mode the live turn itself is shown instead of a stale notice.
+- Tests: 49 tests / 8 files.
+
 ## 2.5.2 — 2026-11-04
 
 - Treat DSH goal phase `complete` as completed (previously only `completed` / `done`). A finished goal no longer shows as an in-progress task card at the bottom of a replayed timeline.
