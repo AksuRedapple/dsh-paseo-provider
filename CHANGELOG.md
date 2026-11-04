@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.4.0 — 2026-11-03
+
+- Map DSH `goal/change` to a persistent task card and restore the current goal/todos from session projections when opening a session.
+- `goal/change` is now a known timeline event instead of an unknown-event notice.
+- 42 tests / 8 files.
+
 ## 2.3.0 — 2026-11-03
 
 - Stream reasoning live: first reasoning delta is emitted immediately, then every ~40 characters, using a stable item id and cumulative text (Paseo derives the delta).

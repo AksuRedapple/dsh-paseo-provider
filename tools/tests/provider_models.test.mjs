@@ -132,6 +132,8 @@ test('provider-models: session.open 同步 DSH 标题并回写新会话 title', 
       values: {
         title: 'DSH Title',
         modelSelection: { next: { provider: 'prov-a', model: 'mock-flash' } },
+        goal: { goal: { id: 'g1', revision: 1, objective: 'Goal X', phase: 'active', maxGoalRounds: 5 }, roundsStarted: 1 },
+        todos: [{ content: 'Task A', status: 'completed' }],
       },
     },
   };
@@ -155,6 +157,9 @@ test('provider-models: session.open 同步 DSH 标题并回写新会话 title', 
   await new Promise((r) => setTimeout(r, 300));
   const opened1 = events.find((e) => e.type === 'session.opened' && e.requestId === 'r1');
   assert.equal(opened1?.title, 'DSH Title');
+  const items = events.filter((e) => e.type === 'timeline.item').map((e) => e.item);
+  assert.ok(items.some((i) => i.type === 'todo' && i.id === 'dsh-goal' && /Goal X/.test(i.items?.[0]?.text || '')));
+  assert.ok(items.some((i) => i.type === 'todo' && i.id === 'dsh-todo' && i.items?.[0]?.text === 'Task A'));
 
   // 新会话：config.title 回写到 DSH
   await conn.send({

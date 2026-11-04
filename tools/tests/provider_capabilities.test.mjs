@@ -141,6 +141,9 @@ test('capabilities: history replay 重建 user/assistant/tool/todo', async (t) =
         { content: 'one', status: 'completed' },
         { content: 'two', status: 'in_progress' },
       ] } } },
+    { event: { type: 'goal/change', seq: 6, time: now,
+      data: { operation: 'create', roundsStarted: 2,
+        goal: { id: 'g1', revision: 1, objective: 'Ship the thing', phase: 'active', maxGoalRounds: 10 } } } },
   ];
   const mock = await startMockDsh(() => {}, { records, hasMore: true });
   process.env.DSH_BASE = `http://127.0.0.1:${mock.port}`;
@@ -168,9 +171,11 @@ test('capabilities: history replay 重建 user/assistant/tool/todo', async (t) =
   const tool = tools.find((i) => i.status === 'completed');
   assert.equal(tool?.name, 'bash');
   assert.equal(tool?.status, 'completed');
-  const todo = items.find((i) => i.type === 'todo');
+  const todo = items.find((i) => i.type === 'todo' && i.id === 'dsh-todo');
   assert.equal(todo?.items?.length, 2);
   assert.equal(todo?.items?.[0]?.completed, true);
+  const goal = items.find((i) => i.type === 'todo' && i.id === 'dsh-goal');
+  assert.match(goal?.items?.[0]?.text || '', /Ship the thing/);
 
   const truncated = events.find((e) => e.type === 'session.notice' && /截断/.test(e.notice?.description || ''));
   assert.ok(truncated, 'replay truncation notice expected');

@@ -5,7 +5,7 @@
  * 输出：actions（timeline / turn / notice / echo / done），由调用方转换成各自协议。
  */
 
-export const TIMELINE_EVENTS = new Set(['user/message', 'assistant/message', 'tool/call', 'tool/result', 'todo/write']);
+export const TIMELINE_EVENTS = new Set(['user/message', 'assistant/message', 'tool/call', 'tool/result', 'todo/write', 'goal/change']);
 export const TURN_EVENTS = new Set(['turn/start', 'turn/end']);
 export const IGNORED_EVENTS = new Set([
   'step/start', 'step/end', 'assistant/attempt',

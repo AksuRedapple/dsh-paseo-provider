@@ -12,6 +12,7 @@
 - **模型选择是实时的**：从 `session/modelCatalog` 拉模型目录（provider 分组 + reasoning efforts）；切换模型/思考档位真正写回 DSH。
 - **桌面版原生交互**：图片 prompt（DSH `mediaType`）、运行中 steer 插话（`mode:'steer'`）、`todo/write` → 时间线任务列表。
 - **实时过程**：thinking（reasoning-delta）边到边发；工具调用一开始就显示 running，结果回来再更新为 completed。
+- **Goal 可见**：DSH 的 `goal/change` 映射为时间线里的任务卡（Paseo 没有独立 goal 卡片，用 todo 项承载）；打开会话时从 projections 恢复当前 goal 和 todos。
 - **上下文与失败可见**：usage 带 token 与上下文窗口占用；seq 重置、快照截断、未知事件、重连缺口都有 notice，不静默。
 - **历史导入/回放**：列出 DSH 会话、打开并重建时间线；`hasMore` 截断会明确提示。
 - **标题同步**：打开已有会话时使用 DSH 标题；新会话把 Paseo 的 `title` 回写到 DSH（`session/rename`）。

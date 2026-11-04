@@ -143,8 +143,9 @@ export function createProvider() {
                 console.error('[dsh] session.open', sid, 'dsh=', dshId, 'history=', input.history);
 
                 // 标题：已有会话用 DSH 的标题；新会话把 Paseo 的 config.title 回写到 DSH。
+                const info = await sessionInfo(dshId);
                 const desiredTitle = str(input.config?.title);
-                let dshTitle = await sessionTitleOf(dshId);
+                let dshTitle = info.title;
                 if (desiredTitle && (!dshTitle || !input.persistence)) {
                   try {
                     await renameSession(dshId, desiredTitle);
@@ -219,9 +220,13 @@ export function createProvider() {
                 if (cat) {
                   emit({ type: 'session.config', sessionId: sid, config: toProviderConfig(cat, model) });
                 }
-                const ctx = await sessionContextUsage(dshId).catch(() => null);
-                if (ctx) emit({ type: 'session.usage', sessionId: sid, usage: ctx });
-                if (await sessionRunning(dshId).catch(() => false)) {
+                if (info.usage) emit({ type: 'session.usage', sessionId: sid, usage: info.usage });
+                if (info.goal) {
+                  const goalItem = goalTodoItem(info.goal.goal, info.goal.roundsStarted);
+                  if (goalItem) emit({ type: 'timeline.item', sessionId: sid, item: goalItem });
+                }
+                if (info.todos) emit({ type: 'timeline.item', sessionId: sid, item: { type: 'todo', id: 'dsh-todo', items: info.todos } });
+                if (info.running) {
                   emit({
                     type: 'session.notice',
                     sessionId: sid,
@@ -627,13 +632,59 @@ async function sessionRunning(dshId: string): Promise<boolean> {
   }
 }
 
-async function sessionTitleOf(dshId: string): Promise<string | undefined> {
+/** goal projection 形状：{ goal:{id,revision,objective,phase,maxGoalRounds}, roundsStarted, ... } */
+function goalOfItem(item: any) {
+  const g = item?.projections?.values?.goal;
+  if (!g || typeof g !== 'object') return null;
+  if (g.goal && typeof g.goal === 'object') return { goal: g.goal, roundsStarted: g.roundsStarted };
+  return { goal: g };
+}
+
+function todosOfItem(item: any) {
+  const t = item?.projections?.values?.todos;
+  if (!Array.isArray(t)) return null;
+  const items = t
+    .map((x: any, i: number) => ({
+      id: String(i),
+      text: String(x?.content ?? x?.text ?? ''),
+      completed: x?.status === 'completed',
+      ...(x?.status ? { status: x.status } : {}),
+    }))
+    .filter((x: any) => x.text);
+  return items.length ? items : null;
+}
+
+/** DSH goal → Paseo todo 项（Paseo 没有独立的 goal 卡片，todo 是唯一持久的列表位）。 */
+function goalTodoItem(goal: any, roundsStarted?: number) {
+  const objective = String(goal?.objective ?? '').replace(/\s+/g, ' ').trim();
+  if (!objective) return null;
+  const short = objective.length > 300 ? `${objective.slice(0, 300)}…` : objective;
+  const max = Number(goal?.maxGoalRounds) || 0;
+  const rounds = max && roundsStarted != null ? `（${roundsStarted}/${max} 轮）` : '';
+  const phase = String(goal?.phase ?? 'active');
+  const completed = phase === 'completed' || phase === 'done';
+  const status = completed ? 'completed' : phase === 'paused' ? 'pending' : 'in_progress';
+  return {
+    type: 'todo' as const,
+    id: 'dsh-goal',
+    items: [{ id: String(goal?.id ?? 'goal'), text: `目标：${short}${rounds}`, completed, status }],
+  };
+}
+
+async function sessionInfo(dshId: string) {
   try {
     const items = await listSessions();
-    const t = items.find((s) => s.sessionId === dshId)?.projections?.values?.title;
-    return typeof t === 'string' && t.trim() ? t : undefined;
+    const item = items.find((s) => s.sessionId === dshId);
+    const title = item?.projections?.values?.title;
+    return {
+      title: typeof title === 'string' && title.trim() ? title : undefined,
+      running: item?.running === true,
+      usage: contextUsageOf(item),
+      goal: goalOfItem(item),
+      todos: todosOfItem(item),
+    };
   } catch {
-    return undefined;
+    return { title: undefined, running: false, usage: null, goal: null, todos: null };
   }
 }
 
@@ -707,6 +758,13 @@ function toTimeline(ev: DshEvent, pending: Map<string, any>): any[] {
       .filter((t: any) => t.text);
     // 固定 id：Paseo 按 id 合并，连续 todo/write 只更新同一条
     out.push({ type: 'todo', id: 'dsh-todo', items });
+  } else if (ev.type === 'goal/change') {
+    if (d.operation === 'clear' || !d.goal) {
+      out.push({ type: 'todo', id: 'dsh-goal', items: [] });
+    } else {
+      const item = goalTodoItem(d.goal, d.roundsStarted);
+      if (item) out.push(item);
+    }
   } else if (ev.type === 'tool/call') {
     const callId = String(d.callId || ev.seq);
     pending.set(callId, { d, seq: ev.seq, time: ev.time });

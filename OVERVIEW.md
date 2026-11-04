@@ -21,6 +21,7 @@ DSH's desktop app exposes a local HTTP RPC endpoint and a WebSocket mux. The plu
 - Interrupt a running turn, close a session, and report whether a runtime can be stopped.
 - Model catalog from DSH, including model and reasoning-effort selection for existing sessions.
 - Image prompts and steering a running turn.
+- Show the DSH goal as a persistent task card (Paseo has no dedicated goal item) and restore goals/todos from projections when opening a session.
 - Report snapshot truncation, reconnects and unknown events as visible notices.
 
 ## Data access
@@ -40,3 +41,4 @@ The plugin runs unsandboxed with the permissions of the user running the Paseo d
 - Permission prompts, MCP servers, slash commands, session revert and archive are not supported.
 - Prompting a DSH session that is already running in another client steers into the current turn by default; set `DSH_RUNNING_MODE=fail` to reject with a visible busy error instead.
 - Title changes made by DSH after a turn are not pushed live (the Paseo provider contract has no title update event); reopening uses the DSH title.
+- Goals are rendered as a task card because the Paseo timeline has no dedicated goal item.

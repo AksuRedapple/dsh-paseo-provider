@@ -126,6 +126,7 @@ WS 路径（`server/provider.ts` 直连本机 DSH）：
 | 断线重连 | 客户端主动断开第 1 条连接 → `connects=2, snapshots=2, errors=1, gaps=0` |
 | 实时过程（真机） | reasoning 1.43/1.60/1.72s；工具卡 running 1.96s → completed 4.99s；最终回复 5.87s |
 | 外部 steer 预算 | `DSH_STEER_BUDGET_MS` 默认 30 分钟，关闭 idle 兜底，避免长外部轮次被 120s 误杀 |
+| Goal 卡片（真机） | ssot 会话打开：`dsh-goal` 卡片 status=in_progress，文本为 objective 前 300 字 + 轮次；`goal/change` 实时更新 |
 | 截断提示 | 打开/回放历史时提示一次；每轮 follow 的 `hasMore` 不再重复弹 notice（`provider-mock` 断言） |
 | open 指定模型 | `paseo agent run --model deepseek-official::deepseek-v4-pro --thinking low` → inspect 显示 Model/Thinking 均生效 |
 | 标题同步 | `--title TITLE-E2E-OK` → DSH `session/list` 中该会话标题为 `TITLE-E2E-OK`；打开已有会话使用 DSH 标题 |
