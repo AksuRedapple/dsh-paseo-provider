@@ -371,6 +371,13 @@ export function createProvider() {
                   signal: ctl.signal,
                   content: blocks,
                   mode: steerExternal ? 'steer' : 'queue',
+                  // 外部轮次可能很长：不做 120s 预算、也不要用 idle 兜底提前收工
+                  ...(steerExternal
+                    ? {
+                        budgetMs: Number(process.env.DSH_STEER_BUDGET_MS) || 30 * 60_000,
+                        replyIdleTicks: 1_000_000,
+                      }
+                    : {}),
                   ...(turnId ? { turnIdOverride: turnId, suppressTurnStart: true } : {}),
                   // 纯图片消息没有可匹配的用户文本，跳过 echo 等待
                   startPhase: text ? 'waitEcho' : 'running',
@@ -701,21 +708,24 @@ function toTimeline(ev: DshEvent, pending: Map<string, any>): any[] {
     // 固定 id：Paseo 按 id 合并，连续 todo/write 只更新同一条
     out.push({ type: 'todo', id: 'dsh-todo', items });
   } else if (ev.type === 'tool/call') {
-    pending.set(String(d.callId || ev.seq), { d, seq: ev.seq, time: ev.time });
+    const callId = String(d.callId || ev.seq);
+    pending.set(callId, { d, seq: ev.seq, time: ev.time });
+    out.push({ type: 'tool_call', id: `t-${ev.seq}`, callId,
+      ...buildToolCall(d, '', 'running') });
   } else if (ev.type === 'tool/result') {
     const callId = String(d.toolCallId || d?.message?.source?.callId || '');
     const p = pending.get(callId);
     if (p) {
       pending.delete(callId);
       out.push({ type: 'tool_call', id: `t-${p.seq}`, callId,
-        ...buildToolCall(p.d, texts(d?.message?.content, ['text'])) });
+        ...buildToolCall(p.d, texts(d?.message?.content, ['text']), 'completed') });
     }
   }
   return out;
 }
 
 /** 按 DSH 工具名映射到 Paseo 的 detail 联合类型。 */
-function buildToolCall(d: any, output: string) {
+function buildToolCall(d: any, output: string, status: 'running' | 'completed' | 'failed' = 'completed') {
   let args: any = {};
   try {
     args = typeof d.arguments === 'string' ? JSON.parse(d.arguments) : d.arguments || {};
@@ -743,12 +753,17 @@ function buildToolCall(d: any, output: string) {
   } else {
     detail = { type: 'unknown', input: args, output: output.slice(0, 2000) };
   }
-  return { name, detail, status: 'completed', error: null };
+  return {
+    name,
+    detail,
+    status,
+    error: status === 'failed' ? { message: output || 'tool failed' } : null,
+  };
 }
 
 /** 未拿到 result 的工具：结算成 failed，避免界面永远 running。 */
 function settleToolFailure(callId: string, p: any, paseoId: string, emit: Emit, message: string) {
-  const built = buildToolCall(p.d, '');
+  const built = buildToolCall(p.d, message, 'failed');
   emit({
     type: 'timeline.item',
     sessionId: paseoId,
@@ -789,6 +804,7 @@ export async function runTurn(
     content?: DshPromptBlock[];
     mode?: 'queue' | 'steer';
     startPhase?: 'waitEcho' | 'running';
+    replyIdleTicks?: number;
     turnIdOverride?: string;
     suppressTurnStart?: boolean;
     onTurn?: (turnId: string, state: string) => void;
@@ -820,33 +836,37 @@ export async function runTurn(
     step: '',
     reasoning: '',
     text: '',
-    rSeq: 0,
     tSeq: 0,
     rAcc: new Map<string, string>(),
     tAcc: new Map<string, string>(),
   };
+  // Paseo 的 provider bridge 会按 item.id 对 reasoning/assistant_message 做增量：
+  // 同 id 发累计文本，它只转发新增部分。用稳定 id + 累计文本才能实时流。
+  const emitReasoning = () => {
+    if (!preview.step || !preview.reasoning) return;
+    const prev = preview.rAcc.get(preview.step) || '';
+    if (preview.reasoning === prev) return;
+    preview.rAcc.set(preview.step, preview.reasoning);
+    emit({
+      type: 'timeline.item',
+      sessionId: paseoId,
+      item: { type: 'reasoning', id: `rs-${preview.step}`, text: preview.reasoning },
+    });
+  };
+  const emitText = () => {
+    if (!preview.step || !preview.text) return;
+    const text = preview.text;
+    preview.text = '';
+    preview.tAcc.set(preview.step, (preview.tAcc.get(preview.step) || '') + text);
+    emit({
+      type: 'timeline.item',
+      sessionId: paseoId,
+      item: { type: 'assistant_message', id: `as-${preview.step}-${preview.tSeq++}`, text },
+    });
+  };
   const flushPreview = () => {
-    if (!preview.step) return;
-    if (preview.reasoning) {
-      const text = preview.reasoning;
-      preview.reasoning = '';
-      preview.rAcc.set(preview.step, (preview.rAcc.get(preview.step) || '') + text);
-      emit({
-        type: 'timeline.item',
-        sessionId: paseoId,
-        item: { type: 'reasoning', id: `rs-${preview.step}-${preview.rSeq++}`, text },
-      });
-    }
-    if (preview.text) {
-      const text = preview.text;
-      preview.text = '';
-      preview.tAcc.set(preview.step, (preview.tAcc.get(preview.step) || '') + text);
-      emit({
-        type: 'timeline.item',
-        sessionId: paseoId,
-        item: { type: 'assistant_message', id: `as-${preview.step}-${preview.tSeq++}`, text },
-      });
-    }
+    emitReasoning();
+    emitText();
   };
   const handlePreviewFrame = (f: any) => {
     if (!f) return;
@@ -860,7 +880,11 @@ export async function runTurn(
     // 否则会和最终 assistant/message 的 key 对不上（实测曾退化成 "?:?" 导致重复）。
     if (f.turn != null && f.step != null) {
       const key = `${f.turn}:${f.step}`;
-      if (preview.step && key !== preview.step) flushPreview();
+      if (preview.step && key !== preview.step) {
+        flushPreview();
+        preview.reasoning = '';
+        preview.text = '';
+      }
       preview.step = key;
     }
     if (!preview.step) return;
@@ -869,7 +893,9 @@ export async function runTurn(
       const t = typeof c.text === 'string' ? c.text : '';
       if (c.type === 'reasoning-delta' && t) {
         preview.reasoning += t;
-        if (preview.reasoning.length >= 80) flushPreview();
+        // 首块立即发，之后每 40 字增量发一次（bridge 会按 id 只转发新增文本）
+        const prevLen = (preview.rAcc.get(preview.step) || '').length;
+        if (prevLen === 0 || preview.reasoning.length - prevLen >= 40) emitReasoning();
       } else if (c.type === 'text-delta' && t) {
         // 正文攒到 block-end 一次落定：分块合并会在块边界插入换行，破坏最终排版。
         preview.text += t;
@@ -945,6 +971,7 @@ export async function runTurn(
       echoTimeoutMs: deps.echoTimeoutMs ?? 15_000,
       budgetMs: deps.budgetMs ?? 120_000,
       startPhase: deps.startPhase ?? 'waitEcho',
+      replyIdleTicks: deps.replyIdleTicks ?? 5,
       // 每轮 follow 的首个快照都会 hasMore=true；截断只在打开/回放历史时提示一次
       noticeTruncation: false,
     });

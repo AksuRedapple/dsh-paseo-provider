@@ -51,8 +51,10 @@ test('provider-mock: WS prompt emits tool, text, usage, completion', async (t) =
   const items = events.filter((e) => e.type === 'timeline.item').map((e) => e.item);
   const assistant = items.filter((i) => i.type === 'assistant_message').map((i) => i.text);
   assert.deepEqual(assistant, ['mock-answer'], 'text must appear exactly once');
-  const tool = items.find((i) => i.type === 'tool_call');
-  assert.ok(tool, 'tool_call item expected');
+  const tools = items.filter((i) => i.type === 'tool_call');
+  assert.ok(tools.some((i) => i.status === 'running'), 'running tool card expected');
+  const tool = tools.find((i) => i.status === 'completed');
+  assert.ok(tool, 'completed tool card expected');
   assert.equal(tool.status, 'completed');
 
   const usage = events.find((e) => e.type === 'session.usage');

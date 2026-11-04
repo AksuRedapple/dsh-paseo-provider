@@ -163,7 +163,9 @@ test('capabilities: history replay 重建 user/assistant/tool/todo', async (t) =
   const items = events.filter((e) => e.type === 'timeline.item').map((e) => e.item);
   assert.ok(items.some((i) => i.type === 'user_message' && i.text === 'first question'));
   assert.ok(items.some((i) => i.type === 'assistant_message' && i.text === 'answer'));
-  const tool = items.find((i) => i.type === 'tool_call');
+  const tools = items.filter((i) => i.type === 'tool_call');
+  assert.ok(tools.some((i) => i.status === 'running'), 'running tool card expected');
+  const tool = tools.find((i) => i.status === 'completed');
   assert.equal(tool?.name, 'bash');
   assert.equal(tool?.status, 'completed');
   const todo = items.find((i) => i.type === 'todo');

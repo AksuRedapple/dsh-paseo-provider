@@ -1,5 +1,12 @@
 # Changelog
 
+## 2.3.0 — 2026-11-03
+
+- Stream reasoning live: first reasoning delta is emitted immediately, then every ~40 characters, using a stable item id and cumulative text (Paseo derives the delta).
+- Tool cards are emitted when the tool starts (`running`) and updated to `completed` with the result, instead of appearing only after completion.
+- External steer uses a 30-minute budget (`DSH_STEER_BUDGET_MS`) and disables the idle fallback, so long DSH turns are not failed at 120s.
+- 42 tests / 8 files.
+
 ## 2.2.0 — 2026-11-03
 
 - Sync titles: open an existing session with its DSH title, and write the Paseo `title` back to DSH (`session/rename`) for new sessions.
