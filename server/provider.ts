@@ -685,7 +685,8 @@ function goalTodoItem(goal: any, roundsStarted?: number) {
   const max = Number(goal?.maxGoalRounds) || 0;
   const rounds = max && roundsStarted != null ? `（${roundsStarted}/${max} 轮）` : '';
   const phase = String(goal?.phase ?? 'active');
-  const completed = phase === 'completed' || phase === 'done';
+  // 真机 phase 取值是 active / complete（不是 completed），两种都算完成
+  const completed = phase === 'complete' || phase === 'completed' || phase === 'done';
   const status = completed ? 'completed' : phase === 'paused' ? 'pending' : 'in_progress';
   return {
     type: 'todo' as const,

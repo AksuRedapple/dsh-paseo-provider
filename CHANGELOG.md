@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.5.2 — 2026-11-04
+
+- Treat DSH goal phase `complete` as completed (previously only `completed` / `done`). A finished goal no longer shows as an in-progress task card at the bottom of a replayed timeline.
+- Tests: 48 tests / 8 files.
+
 ## 2.5.1 — 2026-11-04
 
 - Report `prompt_result(turn|steer)` as soon as DSH accepts the prompt, using a provider-generated turn id that every `session.turn` event reuses. Paseo aborts a run after 60 seconds if it never sees the start result, so any turn longer than a minute failed with `run did not start`.

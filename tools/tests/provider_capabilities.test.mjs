@@ -151,7 +151,8 @@ test('capabilities: history replay 重建 user/assistant/tool/todo', async (t) =
     projections: {
       values: {
         goal: {
-          goal: { id: 'g1', revision: 2, objective: 'Ship the thing', phase: 'completed', maxGoalRounds: 10 },
+          // 真机是 complete（不是 completed）
+          goal: { id: 'g1', revision: 2, objective: 'Ship the thing', phase: 'complete', maxGoalRounds: 10 },
           roundsStarted: 3,
         },
       },
