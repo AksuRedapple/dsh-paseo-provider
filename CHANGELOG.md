@@ -1,5 +1,14 @@
 # Changelog
 
+## 2.8.0 — 2026-11-10
+
+同一轮复盘的后三件（1/2/3）：
+
+- **镜像改「暂停」而不是「每轮重建」**：自有回合只在 observer 上 `setPaused(true)`，WS 连接保留、游标照常前进（恢复后不回放），回合结束再放开。以前每轮 `stopObserver → startObserver`，单会话 89 次启动，DSH 重启期尤其容易撞 `1006`。断言锁在 `provider_observer`：一起回合只允许新增 runTurn 那一条连接。
+- **图片能力预检**：DSH 的 `modelCatalog` 没有能力位，改为从 `session/attachment-invalid` 反向学习（`provider::model` 集合）。学到的模型再收到图片时本地快速失败（`dsh/no-image-support`），DSH 拒绝时也把原始 JSON 换成可读错误（`dsh/attachment`）。
+- **`selectModel` 失败不再整条失败**：常见于目录漂移（Paseo 列表里还有 DSH 已下架的 provider）。现在保留 DSH 当前模型、强制刷新目录、推一条带新模型列表的 `session.config`，UI 不再继续提供坏模型；`session.open` 路径同样清缓存重取。
+- Tests: 57 tests / 10 files.
+
 ## 2.7.0 — 2026-11-10
 
 线上日志复盘（11-07 ~ 11-09，108 次提问 / 7 次回合失败）后的一轮「可解释性 + 韧性」修复：

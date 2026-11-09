@@ -60,6 +60,15 @@ export async function startMockDsh(onPrompt, opts = {}) {
         args = j?.payload?.args?.request ?? j?.payload?.args?._request ?? j?.payload?.args ?? {};
       } catch {}
       calls.push({ method, args });
+      // 可选：模拟 DSH 的失败响应（如附件/模型能力被拒），走 result.ok=false 分支
+      const failWith = (method === 'session/prompt' && opts.promptError)
+        || (method === 'session/selectModel' && opts.selectModelError)
+        || null;
+      if (failWith) {
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify({ result: { ok: false, error: failWith } }));
+        return;
+      }
       const value = method === 'session/create' ? { sessionId: opts.sessionId || 'mock-session' }
         : method === 'session/list' ? { items: sessions }
         : method === 'session/modelCatalog' ? (opts.catalog || MOCK_CATALOG)
@@ -83,18 +92,29 @@ export async function startMockDsh(onPrompt, opts = {}) {
   });
   const wss = new WebSocketServer({ server });
   let snapshotSent = false;
+  let connectionTotal = 0;
+  /** 每条连接各自的 streamId：send() 要能打到「还活着的那条」（镜像长连时不止一条）。 */
+  const live = [];
   wss.on('connection', (ws, req) => {
+    connectionTotal++;
     if (requiredCookie && req.headers.cookie !== requiredCookie) {
       ws.close(1008, 'unauthorized');
       return;
     }
     currentWs = ws;
     snapshotSent = false;
+    const conn = { ws, streamId: '' };
+    live.push(conn);
+    ws.on('close', () => {
+      const i = live.indexOf(conn);
+      if (i >= 0) live.splice(i, 1);
+    });
     ws.on('message', (raw) => {
       let m;
       try { m = JSON.parse(raw.toString()); } catch { return; }
       if (m.type !== 'open') return;
       streamId = m.streamId;
+      conn.streamId = m.streamId;
       snapshotSent = true;
       ws.send(JSON.stringify({
         type: 'item', streamId,
@@ -106,10 +126,13 @@ export async function startMockDsh(onPrompt, opts = {}) {
   return {
     port: server.address().port,
     calls,
-    /** 观察者测试用：向当前连接推一条 mux item；未就绪时返回 false。 */
+    /** 累计 mux 连接数（断言「不再每轮重建连接」用）。 */
+    connections: () => connectionTotal,
+    /** 观察者测试用：向最近一条就绪的连接推 mux item；没有就绪连接时返回 false。 */
     send(value) {
-      if (!currentWs || currentWs.readyState !== 1 || !streamId || !snapshotSent) return false;
-      currentWs.send(JSON.stringify({ type: 'item', streamId, value }));
+      const target = live.filter((c) => c.ws.readyState === 1 && c.streamId).at(-1);
+      if (!target) return false;
+      target.ws.send(JSON.stringify({ type: 'item', streamId: target.streamId, value }));
       return true;
     },
     setCookie(value) { requiredCookie = value; },

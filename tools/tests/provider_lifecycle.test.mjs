@@ -269,3 +269,95 @@ test('lifecycle: interrupt 后立刻发消息不再误判 busy', async (t) => {
   // 观察者会长期跟随后台重连，收尾必须显式关会话，否则测试进程不退出
   await conn.send({ type: 'session.close', requestId: 'r3', sessionId: 'p1' });
 });
+
+// ---------- 2026-11-10：图片能力预检 ----------
+//
+// DSH 的 modelCatalog 没有能力位，只能从 session/attachment-invalid 反向学习；
+// 学到之后同类请求要快速失败，而不是每轮都打到 DSH 才报错。
+
+test('lifecycle: 不支持图片的模型 → 学一次，之后快速失败', async (t) => {
+  const mock = await startMockDsh(() => {}, {
+    promptError: { code: 'session/attachment-invalid', message: 'Model "mock-pro" does not support image input' },
+  });
+  process.env.DSH_BASE = `http://127.0.0.1:${mock.port}`;
+  process.env.DSH_MUX = `ws://127.0.0.1:${mock.port}`;
+  t.after(() => mock.close());
+
+  const { createProvider } = await import('../../server/provider.ts');
+  const conn = await createProvider().connect({});
+  const events = [];
+  conn.onEvent((e) => events.push(e));
+
+  await conn.send({
+    type: 'session.open', requestId: 'r1', sessionId: 'p1',
+    config: { cwd: '/tmp', model: 'prov-a::mock-pro' }, history: 'skip',
+  });
+  await waitFor(events, (e) => e.type === 'session.ready');
+
+  const promptImage = (clientMessageId) => conn.send({
+    type: 'session.prompt', sessionId: 'p1',
+    prompt: {
+      clientMessageId, delivery: 'auto',
+      input: { type: 'message', content: [
+        { type: 'text', text: '看下这张图' },
+        { type: 'image', data: 'aGVsbG8=', mimeType: 'image/png' },
+      ] },
+    },
+  });
+
+  await promptImage('m1');
+  const first = await waitFor(events, (e) => e.type === 'session.prompt_result' && e.clientMessageId === 'm1');
+  assert.equal(first.result.type, 'failed');
+  assert.equal(first.result.error.code, 'dsh/attachment', '第一次由 DSH 拒绝 → 转成可读错误');
+  assert.match(first.result.error.message, /不支持|不接受/, '必须说清是图片能力问题');
+  assert.equal(mock.calls.filter((c) => c.method === 'session/prompt').length, 1);
+
+  await promptImage('m2');
+  const second = await waitFor(events, (e) => e.type === 'session.prompt_result' && e.clientMessageId === 'm2');
+  assert.equal(second.result.error.code, 'dsh/no-image-support', '第二次应在本地快速失败');
+  assert.equal(mock.calls.filter((c) => c.method === 'session/prompt').length, 1, '不得再打 DSH');
+
+  await conn.send({ type: 'session.close', requestId: 'r9', sessionId: 'p1' });
+});
+
+// ---------- 2026-11-10：selectModel 失败 → 刷新目录 ----------
+//
+// 真机两次 `session/model-unavailable`：Paseo 的模型列表里还有 DSH 已下架的 provider。
+// 以前整条 configure 变成 request.failed，UI 还挂着坏模型。
+
+test('lifecycle: selectModel 失败 → 保留当前模型并刷新 session.config', async (t) => {
+  const mock = await startMockDsh(() => {}, {
+    selectModelError: { code: 'session/model-unavailable', message: 'provider "ocgo" is not available' },
+  });
+  process.env.DSH_BASE = `http://127.0.0.1:${mock.port}`;
+  process.env.DSH_MUX = `ws://127.0.0.1:${mock.port}`;
+  t.after(() => mock.close());
+
+  const { createProvider } = await import('../../server/provider.ts');
+  const conn = await createProvider().connect({});
+  const events = [];
+  conn.onEvent((e) => events.push(e));
+
+  await conn.send({
+    type: 'session.open', requestId: 'r1', sessionId: 'p1',
+    config: { cwd: '/tmp' }, history: 'skip',
+  });
+  await waitFor(events, (e) => e.type === 'session.ready');
+  const configsBefore = events.filter((e) => e.type === 'session.config').length;
+
+  await conn.send({
+    type: 'session.configure', requestId: 'r2', sessionId: 'p1',
+    changes: { model: 'prov-a::mock-pro' },
+  });
+
+  const refreshed = await waitFor(events, (e) => e.type === 'session.config'
+    && events.filter((x) => x.type === 'session.config').length > configsBefore);
+  assert.ok(Array.isArray(refreshed.config.models) && refreshed.config.models.length > 0,
+    '刷新后的 config 必须带模型列表');
+  const notice = events.find((e) => e.type === 'session.notice' && /切换模型失败/.test(e.notice?.description || ''));
+  assert.ok(notice, '必须有一条可读 notice');
+  assert.ok(!events.some((e) => e.type === 'request.failed'), '不应把整条 configure 打成失败');
+  assert.equal(mock.calls.filter((c) => c.method === 'session/selectModel').length, 1, '只尝试一次，不狂刷');
+
+  await conn.send({ type: 'session.close', requestId: 'r9', sessionId: 'p1' });
+});

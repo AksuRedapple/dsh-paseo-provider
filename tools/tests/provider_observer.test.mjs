@@ -77,3 +77,70 @@ test('observer: external turn is mirrored after open', async (t) => {
   assert.ok(items.some((i) => i.type === 'user_message' && i.text === 'external question'));
   assert.ok(items.some((i) => i.type === 'assistant_message' && i.text === 'external answer'));
 });
+
+// ---------- 2026-11-10：自有回合不重建镜像连接 ----------
+//
+// 以前每轮都 stopObserver → runTurn 开新连接 → startObserver 再开一条；
+// 单会话 89 次启动，DSH 重启期尤其容易撞上 1006。现在改成暂停：连接保持，
+// 只丢输出（游标照常前进，恢复后不回放）。
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const until = async (pred, ms = 5000, what = 'condition') => {
+  const start = Date.now();
+  while (Date.now() - start < ms) {
+    if (pred()) return;
+    await sleep(20);
+  }
+  throw new Error(`timeout waiting for ${what}`);
+};
+
+test('observer: 自有回合期间连接保留（不 stop/start）', async (t) => {
+  const mock = await startMockDsh((ws, streamId) => {
+    const send = (value) => ws.send(JSON.stringify({ type: 'item', streamId, value }));
+    const now = Date.now();
+    send({ type: 'event', event: { type: 'user/message', seq: 20, time: now,
+      data: { content: [{ type: 'text', text: 'hi' }], source: { kind: 'user' } } } });
+    send({ type: 'event', event: { type: 'turn/start', seq: 21, time: now, data: { turn: 5 } } });
+    send({ type: 'event', event: { type: 'assistant/message', seq: 22, time: now,
+      data: { turn: 5, step: 1, message: { content: [{ type: 'text', text: 'ok' }] } } } });
+    send({ type: 'event', event: { type: 'turn/end', seq: 23, time: now,
+      data: { turn: 5, reason: { kind: 'completed' } } } });
+  }, { sessions: [{ sessionId: 'mock-session' }] });
+  process.env.DSH_BASE = `http://127.0.0.1:${mock.port}`;
+  process.env.DSH_MUX = `ws://127.0.0.1:${mock.port}`;
+  t.after(() => mock.close());
+
+  const { createProvider } = await import('../../server/provider.ts');
+  const conn = await createProvider().connect({});
+  const events = [];
+  conn.onEvent((e) => events.push(e));
+
+  await conn.send({
+    type: 'session.open', requestId: 'r1', sessionId: 'p1',
+    config: { cwd: '/tmp' },
+    persistence: { version: 1, data: { sessionId: 'mock-session' } },
+    history: 'skip',
+  });
+  await waitFor(events, (e) => e.type === 'session.ready');
+  await until(() => mock.connections() >= 1, 5000, 'observer connection');
+  const before = mock.connections();
+
+  await conn.send({
+    type: 'session.prompt', sessionId: 'p1',
+    prompt: { clientMessageId: 'c1', delivery: 'auto',
+      input: { type: 'message', content: [{ type: 'text', text: 'hi' }] } },
+  });
+  await waitFor(events, (e) => e.type === 'session.prompt_result' && e.clientMessageId === 'c1');
+  await sleep(150); // 给 finally 里的恢复逻辑一点时间
+
+  assert.equal(mock.connections(), before + 1,
+    `自有回合只应新增 runTurn 那一条连接（之前 ${before}，现在 ${mock.connections()}）`);
+
+  // 回合结束后镜像恢复：外部事件仍能进来
+  const now = Date.now();
+  await until(() => mock.send({ type: 'event', event: { type: 'turn/start', seq: 30, time: now, data: { turn: 6 } } }),
+    5000, 'observer resumed');
+  await waitFor(events, (e) => e.type === 'session.turn' && e.turnId === 'dsh-ext-6');
+
+  await conn.send({ type: 'session.close', requestId: 'r9', sessionId: 'p1' });
+});

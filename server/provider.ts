@@ -50,6 +50,12 @@ async function loadCatalog(maxAgeMs = 60_000): Promise<DshModelCatalog> {
 
 /** 重连用的端点解析器（2026-11-10）：DSH 桌面端重启会换 launch token → 新 cookie，
  *  端口也可能变。只复用首连的 url/cookie 会永远接不回去。返回 null 表示沿用旧端点。 */
+/** 不支持图片输入的模型（`provider::model`）。DSH 的 modelCatalog 没有能力位，
+ *  只能从 `session/attachment-invalid` 反向学习；学到之后同类请求直接快速失败，
+ *  不用再让整轮跑到 DSH 才报错（2026-11-08 真机一例）。 */
+const imageUnsupported = new Set<string>();
+const ATTACHMENT_REJECTED = /attachment-invalid|does not support image/i;
+
 async function endpointResolver(): Promise<{ url: string; connect: (url: string) => any } | null> {
   const ep = await getDshEndpoint({ force: true }).catch(() => null);
   if (!ep?.cookie) return null;
@@ -222,6 +228,10 @@ export function createProvider() {
                         ...(r.selected.reasoningEffort ? { reasoningEffort: r.selected.reasoningEffort } : {}),
                       };
                     } catch (e) {
+                      // 目录漂移（Paseo 手里还有 DSH 已下线的 provider/model）：清缓存，
+                      // 下面的 session.config 会用刷新后的目录，UI 不再挂着坏模型
+                      catalogCache = null;
+                      logWarn('selectModel failed (open)', { dsh: dshId, model: encodeModelId(provider, modelId), error: errorMessage(e) });
                       emit({
                         type: 'session.notice',
                         sessionId: sid,
@@ -229,7 +239,7 @@ export function createProvider() {
                           id: `open-model-err-${Date.now()}`,
                           severity: 'warning',
                           title: 'DSH',
-                          description: `无法应用模型/思考档位：${errorMessage(e)}`,
+                          description: `无法应用模型/思考档位：${errorMessage(e)}（已刷新可用模型）`,
                         },
                       });
                     }
@@ -333,6 +343,28 @@ export function createProvider() {
                     result: { type: 'failed' },
                   });
                   break;
+                }
+                // 图片能力预检：已知该模型不收图片就直接给可读错误，别让整轮打到 DSH 才失败
+                if (blocks.some((b) => b.type === 'image')) {
+                  const current = sessionModels.get(input.sessionId)
+                    ?? (await resolveSessionModel(dshId).catch(() => null));
+                  const modelKey = current ? encodeModelId(current.provider, current.model) : '';
+                  if (modelKey && imageUnsupported.has(modelKey)) {
+                    logWarn('prompt rejected: model has no image support', { session: input.sessionId, model: modelKey });
+                    emit({
+                      type: 'session.prompt_result',
+                      sessionId: input.sessionId,
+                      clientMessageId,
+                      result: {
+                        type: 'failed',
+                        error: {
+                          message: `当前模型 ${current!.model} 不支持图片输入：请换用支持图片的模型，或去掉图片后重发`,
+                          code: 'dsh/no-image-support',
+                        },
+                      },
+                    });
+                    break;
+                  }
                 }
                 // steer：把新消息插进正在运行的轮次，立即回 {type:'steer', turnId}。
                 // Paseo 只有在拿到的 turnId 与它在跑的 turn 一致时才认为插入成功。
@@ -442,8 +474,9 @@ export function createProvider() {
                 // 持久 follow：snapshot 定基线 → 发 prompt → 消费 event/assistant-stream
                 // → turn/end 收工 → 最后才发 prompt_result。
                 // 不 await：让 interrupt/close 能在本轮运行期间被处理。
-                // 自有回合要独占 follow，先停掉只读镜像；回合结束后再恢复
-                stopObserver(observerState, input.sessionId);
+                // 自有回合要独占输出：暂停只读镜像，但不关它的 WS
+                // （2026-11-10：以前是 stop/start，每轮重建一次连接，DSH 重启期尤其脆）
+                observerState.observers.get(input.sessionId)?.setPaused(true);
                 const ctl = new AbortController();
                 activeTurns.set(input.sessionId, ctl);
                 let turnClosed = false;
@@ -521,12 +554,34 @@ export function createProvider() {
                         error: { message: errorMessage(e) },
                       });
                     }
-                    emit({
-                      type: 'session.prompt_result',
-                      sessionId: input.sessionId,
-                      clientMessageId,
-                      result: { type: 'failed', error: { message: errorMessage(e), code: 'dsh/error' } },
-                    });
+                    const msg = errorMessage(e);
+                    if (ATTACHMENT_REJECTED.test(msg)) {
+                      const current = sessionModels.get(input.sessionId);
+                      if (current) {
+                        const key = encodeModelId(current.provider, current.model);
+                        imageUnsupported.add(key);
+                        logWarn('learned: model has no image support', { session: input.sessionId, model: key });
+                      }
+                      emit({
+                        type: 'session.prompt_result',
+                        sessionId: input.sessionId,
+                        clientMessageId,
+                        result: {
+                          type: 'failed',
+                          error: {
+                            message: `模型${current ? ` ${current.model}` : ''} 不接受本次附件（图片）：请换用支持图片的模型，或去掉图片后重发`,
+                            code: 'dsh/attachment',
+                          },
+                        },
+                      });
+                    } else {
+                      emit({
+                        type: 'session.prompt_result',
+                        sessionId: input.sessionId,
+                        clientMessageId,
+                        result: { type: 'failed', error: { message: msg, code: 'dsh/error' } },
+                      });
+                    }
                   })
                   .finally(() => {
                     if (activeTurns.get(input.sessionId) === ctl) activeTurns.delete(input.sessionId);
@@ -534,7 +589,9 @@ export function createProvider() {
                     observerState.observedTurns.delete(input.sessionId);
                     if (turnSettled.get(input.sessionId) === turnPromise) turnSettled.delete(input.sessionId);
                     if (openSessions.get(input.sessionId) === dshId) {
-                      void startObserver(observerState, input.sessionId, dshId, emit);
+                      const obs = observerState.observers.get(input.sessionId);
+                      if (obs) obs.setPaused(false);
+                      else void startObserver(observerState, input.sessionId, dshId, emit);
                     }
                   });
                 turnSettled.set(input.sessionId, turnPromise);
@@ -596,12 +653,28 @@ export function createProvider() {
                 if (!next) throw new Error('无法确定 DSH 会话模型');
 
                 if (applied) {
-                  const r = await selectModel(dshId, next.provider, next.model, next.reasoningEffort);
-                  next = {
-                    provider: r.selected.provider,
-                    model: r.selected.model,
-                    ...(r.selected.reasoningEffort ? { reasoningEffort: r.selected.reasoningEffort } : {}),
-                  };
+                  try {
+                    const r = await selectModel(dshId, next.provider, next.model, next.reasoningEffort);
+                    next = {
+                      provider: r.selected.provider,
+                      model: r.selected.model,
+                      ...(r.selected.reasoningEffort ? { reasoningEffort: r.selected.reasoningEffort } : {}),
+                    };
+                  } catch (e) {
+                    // 常见于目录漂移：Paseo 的模型列表里还有 DSH 已下架的 provider/model。
+                    // 以前这里会把整条 configure 打成 request.failed，且 UI 继续提供坏模型。
+                    const requested = encodeModelId(next.provider, next.model);
+                    logWarn('selectModel failed', { session: sid, dsh: dshId, requested, error: errorMessage(e) });
+                    note(`切换模型失败：${errorMessage(e)}（已刷新可用模型列表）`, 'warning');
+                    sessionModels.delete(sid);
+                    const fallback = await resolveSessionModel(dshId).catch(() => null);
+                    next = fallback;
+                    catalogCache = null;
+                    const fresh = await loadCatalog(0).catch(() => cat);
+                    emit({ type: 'session.config', sessionId: sid, config: toProviderConfig(fresh, next) });
+                    if (next) sessionModels.set(sid, next);
+                    break;
+                  }
                 }
                 sessionModels.set(sid, next);
                 emit({ type: 'session.config', sessionId: sid, config: toProviderConfig(cat, next) });
@@ -922,10 +995,14 @@ function settleToolFailure(callId: string, p: any, paseoId: string, emit: Emit, 
 }
 
 type ObserverState = {
-  observers: Map<string, { stop: () => void }>;
+  observers: Map<string, ObserverEntry>;
   /** 外部（DSH 桌面版等）正在进行的回合，供 steer 复用同一个 turnId。 */
   observedTurns: Map<string, { n: number; id: string }>;
 };
+
+/** 只读镜像的连接句柄。`setPaused(true)` 只丢输出、不关连接：
+ *  Paseo 自有回合期间由 runTurn 独占输出，但 WS 连接保持不变（2026-11-10）。 */
+type ObserverEntry = { stop: () => void; setPaused: (paused: boolean) => void };
 
 function stopObserver(state: ObserverState, paseoId: string) {
   const o = state.observers.get(paseoId);
@@ -946,12 +1023,18 @@ function startObserver(
 ) {
   if (state.observers.has(paseoId)) return;
   let closed = false;
+  let paused = false;
   let follow: ReturnType<typeof followSession> | null = null;
-  const entry = {
+  const entry: ObserverEntry = {
     stop() {
       if (closed) return;
       closed = true;
       try { follow?.close(); } catch {}
+    },
+    setPaused(next: boolean) {
+      if (closed || paused === next) return;
+      paused = next;
+      logDebug('observer pause', { session: paseoId, dsh: dshId, paused: next });
     },
   };
   // 先同步登记，避免「open 后立刻 prompt」时观察者还没注册、stop 落空
@@ -998,7 +1081,7 @@ function startObserver(
     for await (const msg of follow) {
       if (closed) break;
       if (msg.kind === 'assistant') {
-        preview.frame(msg.frame);
+        if (!paused) preview.frame(msg.frame);
         continue;
       }
       if (msg.kind !== 'event') continue; // snapshot/reset/gap 交给 follow 的静默重连
@@ -1010,24 +1093,27 @@ function startObserver(
       }
       if (ev.type === 'goal/change') continue; // goal 是状态卡，只在 open 时出
       if (ev.type === 'turn/start') {
-        preview.flush();
+        // 暂停期间仍要记录 turn，steer 才能复用同一个 id；只是不往时间线输出
+        if (!paused) preview.flush();
         const n = Number((ev.data as any)?.turn);
         active = { n: Number.isFinite(n) ? n : 0, id: `dsh-ext-${Number.isFinite(n) ? n : ev.seq}` };
         state.observedTurns.set(paseoId, active);
-        emit({ type: 'session.turn', sessionId: paseoId, turnId: active.id, state: 'started' });
+        if (!paused) emit({ type: 'session.turn', sessionId: paseoId, turnId: active.id, state: 'started' });
         continue;
       }
       if (ev.type === 'turn/end') {
-        preview.flush();
+        if (!paused) preview.flush();
         const reason = (ev.data as any)?.reason?.kind;
         const turnState = reason === 'completed' ? 'completed'
           : (reason === 'canceled' || reason === 'aborted') ? 'canceled' : 'failed';
-        if (active) emit({ type: 'session.turn', sessionId: paseoId, turnId: active.id, state: turnState });
+        if (active && !paused) emit({ type: 'session.turn', sessionId: paseoId, turnId: active.id, state: turnState });
         active = null;
         state.observedTurns.delete(paseoId);
-        flushPending(pending, paseoId, emit);
+        if (!paused) flushPending(pending, paseoId, emit);
         continue;
       }
+      // 自有回合进行中：连接保留（游标照常前进，恢复后不会回放），输出交给 runTurn
+      if (paused) continue;
       const key = `${(ev.data as any)?.turn}:${(ev.data as any)?.step}`;
       const items = toTimeline(ev, pending);
       if (!items.length) continue;
