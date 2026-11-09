@@ -213,7 +213,8 @@ test('invariant-3: assistant text precedes prompt_result', async () => {
 
   // 行为测试 + 源码顺序双保险：provider.ts 里 prompt_result 必须在 runTurn 之后
   const src = readFileSync(new URL('../../server/provider.ts', import.meta.url), 'utf8');
-  const streamAt = src.indexOf('void runTurn(input.sessionId');
+  // 2026-11-10：改为 `const turnPromise = runTurn(...)`（要拿 promise 做 interrupt 后的收尾等待）
+  const streamAt = src.search(/(?:void|const turnPromise =)\s*runTurn\(input\.sessionId/);
   const resultAt = streamAt < 0 ? -1 : src.indexOf("type: 'session.prompt_result'", streamAt);
   assert.ok(streamAt >= 0, 'session.prompt branch must start runTurn');
   assert.ok(resultAt > streamAt, 'prompt_result must be emitted only after runTurn starts');
@@ -673,4 +674,65 @@ test('run-5: usage chunk maps to session.usage', async () => {
   const usage = emits.find((e) => e.type === 'session.usage');
   assert.ok(usage, 'session.usage must be emitted');
   assert.deepEqual(usage.usage, { inputTokens: 10, cachedInputTokens: 2, outputTokens: 5 });
+});
+
+// ---------- 2026-11-10：DSH 重启导致回合被打断 ----------
+
+test('run-5: 断线后收工 → interrupted=true 且给出「重启/中断」提示', async () => {
+  const canceled = {
+    type: 'turn/end',
+    seq: 2,
+    time: time(2),
+    data: { turn: 1, reason: { kind: 'canceled' } },
+  };
+  const messages = [
+    { kind: 'error', error: new Error('websocket closed (1006)'), reconnecting: true },
+    { kind: 'event', event: canceled },
+  ];
+  let i = 0;
+  const fakeFollow = {
+    ready: Promise.resolve({ cursor: 1, hasMore: false, events: [] }),
+    close() {},
+    [Symbol.asyncIterator]() {
+      return { next: async () => (i < messages.length ? { value: messages[i++], done: false } : { value: undefined, done: true }) };
+    },
+  };
+  const emits = [];
+  const res = await runTurn('paseo-r1', 'dsh-r1', 'hello', (e) => emits.push(e), {
+    follow: () => fakeFollow,
+    prompt: async () => {},
+    tickMs: 5,
+  });
+
+  assert.equal(res.reason, 'canceled');
+  assert.equal(res.reconnects, 1, '断线必须计数');
+  assert.equal(res.interrupted, true, '断线后立刻收工要标成被打断');
+  const notice = emits.find((e) => e.type === 'session.notice' && /重启|中断/.test(e.notice?.description || ''));
+  assert.ok(notice, '必须留一条可读通知，而不是静默 failed');
+  assert.equal(notice.notice.severity, 'warning');
+});
+
+test('run-6: 正常完成不受断线计数影响（completed 不算 interrupted）', async () => {
+  const messages = [
+    { kind: 'error', error: new Error('websocket error'), reconnecting: true },
+    { kind: 'event', event: userMsg(2, 'hello') },
+    { kind: 'event', event: assistantMsg(3, 'ok') },
+    { kind: 'event', event: turnEnd(4) },
+  ];
+  let i = 0;
+  const fakeFollow = {
+    ready: Promise.resolve({ cursor: 1, hasMore: false, events: [] }),
+    close() {},
+    [Symbol.asyncIterator]() {
+      return { next: async () => (i < messages.length ? { value: messages[i++], done: false } : { value: undefined, done: true }) };
+    },
+  };
+  const res = await runTurn('paseo-r2', 'dsh-r2', 'hello', () => {}, {
+    follow: () => fakeFollow,
+    prompt: async () => {},
+    tickMs: 5,
+  });
+  assert.equal(res.reason, 'completed');
+  assert.equal(res.reconnects, 1);
+  assert.equal(res.interrupted, false);
 });

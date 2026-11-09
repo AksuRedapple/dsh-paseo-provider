@@ -3,6 +3,7 @@
  *
  * 一次 open 消费 snapshot → event / assistant-stream：
  *   · 断线指数退避重连；重连快照补发 seq > lastSeq 的记录；
+ *   · 重连前可用 resolveEndpoint() 重新解析端点（DSH 重启会换 token/端口）；
  *   · snapshot.cursor < lastSeq 判 seq 重置，重建基线且不回放；
  *   · hasMore 发 truncated；未知帧发 unknown；重连缺口发 gap。
  */
@@ -21,14 +22,21 @@ function parseFrame(data) {
 }
 
 export function followSession(sessionId, opts = {}) {
-  const url = opts.url || muxUrl();
-  const connect = opts.connect
+  let url = opts.url || muxUrl();
+  let connect = opts.connect
     || ((u) => {
       if (opts.headers) throw new Error('followSession: headers require a connect function (ws)');
       return new WebSocket(u);
     });
   const backoff = opts.backoffMs || DEFAULT_BACKOFF;
   const reconnectEnabled = opts.reconnect !== false;
+  /**
+   * 重连前重解析端点（2026-11-10）：DSH 桌面端重启会换 launch token / cookie，
+   * 端口也可能变；只复用首连的 url 会永远接不回去（2026-11-07~08 的回合失败即此）。
+   * 返回 {url, connect}；抛错或返回空就沿用旧值。
+   */
+  const resolveEndpoint = typeof opts.resolveEndpoint === 'function' ? opts.resolveEndpoint : null;
+  let reconnects = 0;
 
   const queue = [];
   let waiting = null;
@@ -132,6 +140,24 @@ export function followSession(sessionId, opts = {}) {
 
   const open = () => {
     if (closed) return;
+    if (reconnects > 0 && resolveEndpoint) {
+      // 重连走一次重新解析：DSH 重启后 launch token / cookie 会换，端口也可能变。
+      // 解析失败不阻断重试，继续沿用旧端点。
+      Promise.resolve()
+        .then(() => resolveEndpoint())
+        .then((next) => {
+          if (next && typeof next.url === 'string' && next.url) url = next.url;
+          if (next && typeof next.connect === 'function') connect = next.connect;
+        })
+        .catch(() => {})
+        .then(() => { if (!closed) dial(); });
+      return;
+    }
+    dial();
+  };
+
+  const dial = () => {
+    if (closed) return;
     let sock;
     try {
       sock = connect(url);
@@ -201,6 +227,7 @@ export function followSession(sessionId, opts = {}) {
     const delay = backoff[Math.min(retry++, backoff.length - 1)];
     reconnectTimer = setTimeout(() => {
       reconnectTimer = null;
+      reconnects++;
       open();
     }, delay);
     // 只读观察者可能长期重试；不要因为一个退避定时器把进程钉住

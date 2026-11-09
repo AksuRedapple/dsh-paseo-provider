@@ -33,6 +33,8 @@ export interface FollowOptions {
   backoffMs?: number[];
   readyTimeoutMs?: number;
   connect?: (url: string) => SocketLike;
+  /** 重连前重新解析端点（DSH 重启会换 cookie / 端口）；返回空则沿用旧端点。 */
+  resolveEndpoint?: () => Promise<{ url?: string; connect?: (url: string) => SocketLike } | null | undefined>;
 }
 
 export interface FollowHandle extends AsyncIterable<FollowMessage> {

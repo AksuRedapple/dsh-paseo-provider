@@ -203,3 +203,69 @@ test('lifecycle: 外部运行的会话默认 steer 插入当前轮次', async (t
     .map((e) => e.item.text).join('');
   assert.equal(text, 'steered-answer');
 });
+
+// ---------- 2026-11-10：interrupt 后立刻发消息不再是 busy ----------
+//
+// 线上两次（11-07 15:57:42 / 15:58:54）：点「停止」马上补一句话，
+// 上一轮的 abort→finally 还没跑完，就直接被判 session busy。
+
+const promptWithId = (conn, sessionId, clientMessageId, text) => conn.send({
+  type: 'session.prompt', sessionId,
+  prompt: {
+    clientMessageId, delivery: 'auto',
+    input: { type: 'message', content: [{ type: 'text', text }] },
+  },
+});
+
+test('lifecycle: interrupt 后立刻发消息不再误判 busy', async (t) => {
+  let prompts = 0;
+  const mock = await startMockDsh((ws, streamId) => {
+    prompts++;
+    const send = (value) => ws.send(JSON.stringify({ type: 'item', streamId, value }));
+    const now = Date.now();
+    if (prompts === 1) {
+      // 长轮次：只开不收工，等 interrupt
+      send({ type: 'event', event: { type: 'user/message', seq: 1, time: now,
+        data: { content: [{ type: 'text', text: 'hello' }], source: { kind: 'user' } } } });
+      send({ type: 'event', event: { type: 'turn/start', seq: 2, time: now, data: { turn: 1 } } });
+      return;
+    }
+    send({ type: 'event', event: { type: 'user/message', seq: 3, time: now,
+      data: { content: [{ type: 'text', text: 'again' }], source: { kind: 'user' } } } });
+    send({ type: 'event', event: { type: 'turn/start', seq: 4, time: now, data: { turn: 2 } } });
+    setTimeout(() => {
+      send({ type: 'event', event: { type: 'turn/end', seq: 5, time: Date.now(),
+        data: { turn: 2, reason: { kind: 'completed' } } } });
+    }, 20);
+  });
+  process.env.DSH_BASE = `http://127.0.0.1:${mock.port}`;
+  process.env.DSH_MUX = `ws://127.0.0.1:${mock.port}`;
+  t.after(() => mock.close());
+
+  const { createProvider } = await import('../../server/provider.ts');
+  const conn = await createProvider().connect({});
+  const events = [];
+  conn.onEvent((e) => events.push(e));
+
+  await conn.send({
+    type: 'session.open', requestId: 'r1', sessionId: 'p1',
+    config: { cwd: '/tmp' }, history: 'skip',
+  });
+  await promptWithId(conn, 'p1', 'm1', 'hello');
+  await waitFor(events, (e) => e.type === 'session.turn' && e.state === 'started');
+
+  await conn.send({ type: 'session.interrupt', requestId: 'r2', sessionId: 'p1' });
+  // 关键：不等待任何事件，立刻补一句话（用户真实操作就是这个节奏）
+  await promptWithId(conn, 'p1', 'm2', 'again');
+
+  const second = await waitFor(events,
+    (e) => e.type === 'session.prompt_result' && e.clientMessageId === 'm2');
+  assert.notEqual(second.result.type, 'failed',
+    `interrupt 后立刻发消息被判失败：${JSON.stringify(second.result)}`);
+  assert.ok(second.result.turnId, '第二轮必须拿到 turnId');
+  assert.ok(!events.some((e) => e.type === 'session.prompt_result' && e.result?.error?.code === 'dsh/busy'),
+    '不得再出现 dsh/busy');
+
+  // 观察者会长期跟随后台重连，收尾必须显式关会话，否则测试进程不退出
+  await conn.send({ type: 'session.close', requestId: 'r3', sessionId: 'p1' });
+});

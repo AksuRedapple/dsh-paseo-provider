@@ -12,6 +12,7 @@ import type { DshModelCatalog, DshPromptBlock } from './dsh-client';
 import { fetchSessionRecords, fetchSessionSnapshot, followSession, type DshEvent } from './dsh-ws';
 import { getDshEndpoint } from './dsh-endpoint.mjs';
 import { createTurnState } from './turn-state.mjs';
+import { logDebug, logInfo, logWarn, logError } from './log';
 import {
   catalogDefaults,
   encodeModelId,
@@ -47,6 +48,16 @@ async function loadCatalog(maxAgeMs = 60_000): Promise<DshModelCatalog> {
   return value;
 }
 
+/** 重连用的端点解析器（2026-11-10）：DSH 桌面端重启会换 launch token → 新 cookie，
+ *  端口也可能变。只复用首连的 url/cookie 会永远接不回去。返回 null 表示沿用旧端点。 */
+async function endpointResolver(): Promise<{ url: string; connect: (url: string) => any } | null> {
+  const ep = await getDshEndpoint({ force: true }).catch(() => null);
+  if (!ep?.cookie) return null;
+  const { WebSocket: WsWebSocket } = await import('ws');
+  const cookie = ep.cookie;
+  return { url: ep.mux, connect: (url) => new WsWebSocket(url, { headers: { cookie } }) };
+}
+
 export function createProvider() {
   return {
     id: 'dsh',
@@ -65,11 +76,13 @@ export function createProvider() {
     },
 
     async connect(_request: any) {
-      console.error('[dsh] connect called');
+      logDebug('connect called');
       const listeners: Emit[] = [];
       const openSessions = new Map<string, string>();   // paseoSessionId → dshSessionId
       const activeTurns = new Map<string, AbortController>();
       const activeTurnIds = new Map<string, string>();   // paseoSessionId → 正在跑的 turnId
+      /** 上一轮的收尾 Promise：interrupt 后立刻 prompt 时先等它，避免误判 busy。 */
+      const turnSettled = new Map<string, Promise<unknown>>();
       const sessionModels = new Map<string, ModelRef>(); // paseoSessionId → DSH 当前模型
       // 每个 provider 连接独立：观察者 / 外部正在跑的回合（steer 复用 turnId）
       const observerState: ObserverState = { observers: new Map(), observedTurns: new Map() };
@@ -82,6 +95,7 @@ export function createProvider() {
 
         /** 只做接收与分发；结果全部以事件返回。 */
         async send(input: any) {
+          const startedAt = Date.now();
           // 不打印 prompt 正文（隐私）；只记形状
           const logInput = input?.type === 'session.prompt'
             ? {
@@ -100,7 +114,7 @@ export function createProvider() {
                   persistence: Boolean(input.persistence),
                 }
               : input;
-          console.error('[dsh] INPUT', JSON.stringify(logInput).slice(0,160));
+          logDebug('input', { type: logInput?.type, session: logInput?.sessionId, delivery: logInput?.delivery, blocks: logInput?.blocks, history: logInput?.history });
           try {
             switch (input?.type) {
               case 'catalog': {
@@ -124,7 +138,7 @@ export function createProvider() {
               case 'sessions': {
                 const items = await listSessions();
                 await fillMissingTitles(items, input.limit ?? 50);
-                console.error('[dsh] sessions fetched', items.length);
+                logInfo('sessions fetched', { count: items.length });
                 emit({
                   type: 'sessions',
                   requestId: input.requestId,
@@ -139,13 +153,13 @@ export function createProvider() {
                 if (!dshId) {
                   // 新会话：在 DSH 侧建一个，建立映射（否则 prompt 无处可发）
                   dshId = await createSession(String(input.config?.cwd ?? defaultCwd()));
-                  console.error('[dsh] created dsh session', dshId);
+                  logInfo('created dsh session', { dsh: dshId });
                 }
                 openSessions.set(sid, dshId);
-                console.error('[dsh] session.open', sid, 'dsh=', dshId, 'history=', input.history);
 
                 // 标题：已有会话用 DSH 的标题；新会话把 Paseo 的 config.title 回写到 DSH。
                 const info = await sessionInfo(dshId);
+                logInfo('session.open', { session: sid, dsh: dshId, history: input.history, running: info.running });
                 const desiredTitle = str(input.config?.title);
                 let dshTitle = info.title;
                 if (desiredTitle && (!dshTitle || !input.persistence)) {
@@ -153,7 +167,7 @@ export function createProvider() {
                     await renameSession(dshId, desiredTitle);
                     dshTitle = desiredTitle;
                   } catch (e) {
-                    console.error('[dsh] rename failed', errorMessage(e));
+                    logWarn('rename failed', { dsh: dshId, error: errorMessage(e) });
                   }
                 }
                 const title = desiredTitle || dshTitle;
@@ -264,10 +278,10 @@ export function createProvider() {
                   let sawTodo = false;
                   if (snap.hasMore) {
                     // DSH 的快照窗口几乎总是 hasMore；这是内部细节，只记日志不弹 notice
-                    console.error('[dsh] replay snapshot truncated at cursor', snap.cursor);
+                    logInfo('replay snapshot truncated', { dsh: dshId, cursor: snap.cursor });
                   }
                   const events = snap.events;
-                  console.error('[dsh] replay events', events.length);
+                  logInfo('replay events', { dsh: dshId, count: events.length });
                   let n = 0;
                   const pending = new Map<string, any>();
                   for (const ev of events) {
@@ -284,7 +298,7 @@ export function createProvider() {
                       n++;
                     }
                   }
-                  console.error('[dsh] timeline items emitted', n);
+                  logInfo('timeline items emitted', { dsh: dshId, count: n });
                   // goal 是当前状态而不是事件流：历史里 create/revise/complete 每个 revision
                   // 都发卡会让刷新后的时间线堆出多张目标卡，只保留 projections 的一张。
                   emitGoal();
@@ -301,7 +315,7 @@ export function createProvider() {
                 // 只读镜像：DSH 桌面版/其他客户端发起的回合实时进入 Paseo
                 void startObserver(observerState, sid, dshId, emit,
                   openTurn != null ? { n: openTurn, id: `dsh-ext-${openTurn}` } : undefined);
-                console.error('[dsh] emitted session.ready');
+                logDebug('emitted session.ready', { session: sid });
                 break;
               }
 
@@ -310,7 +324,7 @@ export function createProvider() {
                 const { blocks, text } = extractContent(p);
                 const dshId = openSessions.get(input.sessionId) || input.sessionId;
                 const clientMessageId = p.clientMessageId ?? '';
-                console.error('[dsh] prompt', dshId, 'chars', text.length, 'blocks', blocks.length);
+                logInfo('prompt', { session: input.sessionId, dsh: dshId, chars: text.length, blocks: blocks.length, delivery: p.delivery });
                 if (!blocks.length) {
                   emit({
                     type: 'session.prompt_result',
@@ -351,6 +365,18 @@ export function createProvider() {
                   break;
                 }
                 if (activeTurns.has(input.sessionId)) {
+                  // 中断后立刻发消息：上一轮的 abort → 收尾是异步的，finally 还没跑完。
+                  // 直接判 busy 会把用户的正常操作打成失败（2026-11-07 两例），先等收尾。
+                  const settling = turnSettled.get(input.sessionId);
+                  if (settling) {
+                    await Promise.race([
+                      settling.catch(() => {}),
+                      new Promise((resolve) => setTimeout(resolve, 3000)),
+                    ]);
+                  }
+                }
+                if (activeTurns.has(input.sessionId)) {
+                  logWarn('prompt rejected: turn busy', { session: input.sessionId, dsh: dshId });
                   emit({
                     type: 'session.prompt_result',
                     sessionId: input.sessionId,
@@ -421,7 +447,7 @@ export function createProvider() {
                 const ctl = new AbortController();
                 activeTurns.set(input.sessionId, ctl);
                 let turnClosed = false;
-                void runTurn(input.sessionId, dshId, text, emit, {
+                const turnPromise = runTurn(input.sessionId, dshId, text, emit, {
                   signal: ctl.signal,
                   content: blocks,
                   mode: steerExternal ? 'steer' : 'queue',
@@ -447,7 +473,7 @@ export function createProvider() {
                     }
                   },
                 })
-                  .then(async ({ reason }) => {
+                  .then(async ({ reason, interrupted }) => {
                     if (turnStartReported && !turnClosed) {
                       turnClosed = true;
                       emit({
@@ -461,7 +487,10 @@ export function createProvider() {
                     // 一轮结束后 projections 已更新：把上下文占用补进 usage（Paseo 用它画占用环）
                     const ctx = await sessionContextUsage(dshId).catch(() => null);
                     if (ctx) {
-                      console.error('[dsh] context usage', ctx.contextWindowUsedTokens ?? '?', '/', ctx.contextWindowMaxTokens ?? '?');
+                      logDebug('context usage', {
+                        used: ctx.contextWindowUsedTokens ?? '?',
+                        max: ctx.contextWindowMaxTokens ?? '?',
+                      });
                       emit({ type: 'session.usage', sessionId: input.sessionId, usage: ctx });
                     }
                     emit({
@@ -470,7 +499,15 @@ export function createProvider() {
                       clientMessageId,
                       result: reason === 'completed'
                         ? { type: 'completed' }
-                        : { type: 'failed', error: { message: `turn ${reason}`, code: 'dsh/turn' } },
+                        : {
+                            type: 'failed',
+                            error: {
+                              message: interrupted
+                                ? `turn ${reason}（DSH 连接中断 / 桌面端重启）`
+                                : `turn ${reason}`,
+                              code: 'dsh/turn',
+                            },
+                          },
                     });
                   })
                   .catch((e) => {
@@ -495,10 +532,12 @@ export function createProvider() {
                     if (activeTurns.get(input.sessionId) === ctl) activeTurns.delete(input.sessionId);
                     activeTurnIds.delete(input.sessionId);
                     observerState.observedTurns.delete(input.sessionId);
+                    if (turnSettled.get(input.sessionId) === turnPromise) turnSettled.delete(input.sessionId);
                     if (openSessions.get(input.sessionId) === dshId) {
                       void startObserver(observerState, input.sessionId, dshId, emit);
                     }
                   });
+                turnSettled.set(input.sessionId, turnPromise);
                 break;
               }
 
@@ -586,17 +625,17 @@ export function createProvider() {
                 openSessions.delete(input.sessionId);
                 sessionModels.delete(input.sessionId);
                 emit({ type: 'session.closed', sessionId: input.sessionId });
-                console.error('[dsh] session.closed', input.sessionId);
+                logInfo('session.closed', { session: input.sessionId });
                 break;
               }
 
               case 'session.permission':
-                console.error('[dsh] permission response ignored', input.permissionId);
+                logDebug('permission response ignored', { permission: input.permissionId });
                 return;
 
               default: {
                 const message = `unsupported input: ${input?.type}`;
-                console.error('[dsh]', message);
+                logWarn('unsupported input', { type: input?.type });
                 if (input?.requestId) {
                   emit({ type: 'request.failed', requestId: input.requestId, error: { message, code: 'dsh/unsupported' } });
                   return; // 不再补 request.completed
@@ -606,11 +645,11 @@ export function createProvider() {
             }
             if (input?.requestId) {
               emit({ type: 'request.completed', requestId: input.requestId });
-              console.error('[dsh] request.completed', input.type);
+              logDebug('request.completed', { type: input.type, ms: Date.now() - startedAt });
             }
           } catch (e) {
             const message = errorMessage(e);
-            console.error('[dsh] error', message);
+            logError('input failed', { type: input?.type, error: message });
             if (input?.requestId) {
               emit({
                 type: 'request.failed',
@@ -892,6 +931,7 @@ function stopObserver(state: ObserverState, paseoId: string) {
   const o = state.observers.get(paseoId);
   if (!o) return;
   state.observers.delete(paseoId);
+  logDebug('observer stop', { session: paseoId });
   try { o.stop(); } catch {}
 }
 
@@ -918,7 +958,7 @@ function startObserver(
   state.observers.set(paseoId, entry);
   if (initialTurn) state.observedTurns.set(paseoId, { ...initialTurn });
   else state.observedTurns.delete(paseoId);
-  console.error('[dsh] observer start', dshId);
+  logDebug('observer start', { session: paseoId, dsh: dshId });
 
   void (async () => {
     const ep = await getDshEndpoint().catch(() => null);
@@ -936,6 +976,7 @@ function startObserver(
         readyTimeoutMs: 15_000,
         ...(ep ? { url: ep.mux } : {}),
         ...(connect ? { connect, headers: { cookie: ep?.cookie as string } } : {}),
+        resolveEndpoint: endpointResolver,
       });
     } catch {
       if (state.observers.get(paseoId) === entry) state.observers.delete(paseoId);
@@ -948,9 +989,9 @@ function startObserver(
     let active: { n: number; id: string } | null = initialTurn ?? null;
     try {
       await follow.ready;
-      console.error('[dsh] observer ready', dshId);
+      logDebug('observer ready', { session: paseoId, dsh: dshId });
     } catch {
-      console.error('[dsh] observer not ready', dshId);
+      logWarn('observer not ready', { session: paseoId, dsh: dshId });
       if (state.observers.get(paseoId) === entry) state.observers.delete(paseoId);
       return;
     }
@@ -1123,7 +1164,7 @@ export async function runTurn(
     onStarted?: () => void;
     onTurn?: (turnId: string, state: string) => void;
   } = {},
-): Promise<{ reason: string }> {
+): Promise<{ reason: string; reconnects: number; interrupted: boolean }> {
   const ep = await getDshEndpoint().catch(() => null);
   let connect: ((url: string) => any) | undefined;
   if (ep?.cookie) {
@@ -1136,12 +1177,18 @@ export async function runTurn(
     readyTimeoutMs: 15_000,
     ...(ep ? { url: ep.mux } : {}),
     ...(connect ? { connect, headers: { cookie: ep?.cookie as string } } : {}),
+    // 断线重连时重新解析端点：DSH 重启会换 cookie，端口也可能变
+    ...(deps.follow ? {} : { resolveEndpoint: endpointResolver }),
   });
   const now = deps.now || Date.now;
+  const startedAt = now();
   const pending = new Map<string, any>();
   const notices = new Set<string>();
   let noticeSeq = 0;
   let reason = 'completed';
+  let reconnects = 0;
+  let lastDisconnectAt = 0;
+  let interrupted = false;
   let timer: ReturnType<typeof setInterval> | null = null;
 
   const preview = createPreviewStreamer(paseoId, emit);
@@ -1196,14 +1243,15 @@ export async function runTurn(
     }
   };
 
+  let state: ReturnType<typeof createTurnState> | null = null;
   try {
     const snap = await follow.ready.catch((e) => {
       if (deps.signal?.aborted) return null;
       throw e;
     });
-    if (!snap) return { reason: 'canceled' };
+    if (!snap) return { reason: 'canceled', reconnects, interrupted };
 
-    const state = createTurnState({
+    const turnState = createTurnState({
       promptText: text,
       startSeq: snap.cursor,
       now: now(),
@@ -1216,7 +1264,8 @@ export async function runTurn(
       // 每轮 follow 的首个快照都会 hasMore=true；截断只在打开/回放历史时提示一次
       noticeTruncation: false,
     });
-    handle(state.onSnapshot(snap));
+    state = turnState;
+    handle(turnState.onSnapshot(snap));
     await (deps.prompt || promptSession)(dshId, deps.content ?? text, deps.mode ?? 'queue');
     deps.onStarted?.();
 
@@ -1230,16 +1279,16 @@ export async function runTurn(
           p.settled = true;
         }
       }
-      handle(state.onTick(at, { busy: pending.size > 0 }));
-      if (state.phase === 'done') { try { follow.close(); } catch {} }
+      handle(turnState.onTick(at, { busy: pending.size > 0 }));
+      if (turnState.phase === 'done') { try { follow.close(); } catch {} }
     }, deps.tickMs ?? 1000);
 
     for await (const msg of follow) {
-      if (msg.kind === 'event') handle(state.onEvent(msg.event));
+      if (msg.kind === 'event') handle(turnState.onEvent(msg.event));
       else if (msg.kind === 'assistant') {
         preview.frame(msg.frame);
-        handle(state.onAssistantFrame(msg.frame));
-      } else if (msg.kind === 'snapshot') handle(state.onSnapshot(msg));
+        handle(turnState.onAssistantFrame(msg.frame));
+      } else if (msg.kind === 'snapshot') handle(turnState.onSnapshot(msg));
       else if (msg.kind === 'reset' || msg.kind === 'truncated') { /* state 已按 snapshot 发 notice */ }
       else if (msg.kind === 'gap') {
         notice(`重连期间可能丢失事件：seq ${msg.from} → ${msg.to}`);
@@ -1249,23 +1298,50 @@ export async function runTurn(
           notice(`未知 mux 帧类型：${msg.valueType}`);
         }
       } else if (msg.kind === 'error') {
-        console.error('[dsh] follow error', String(msg.error));
+        if (msg.reconnecting) reconnects++;
+        lastDisconnectAt = now();
+        logWarn('follow error', {
+          session: paseoId,
+          dsh: dshId,
+          attempt: reconnects,
+          reconnecting: msg.reconnecting !== false,
+          error: String(msg.error instanceof Error ? msg.error.message : msg.error),
+        });
         if (!notices.has('follow-error')) {
           notices.add('follow-error');
-          notice('DSH 连接中断，正在自动重连');
+          notice('DSH 连接中断，正在自动重连（回合会继续）');
         }
       }
-      if (state.phase === 'done' || deps.signal?.aborted) break;
+      if (turnState.phase === 'done' || deps.signal?.aborted) break;
     }
     if (deps.signal?.aborted) reason = 'canceled';
+    // 断线后 60s 内就收工：大概率是 DSH 桌面端重启把回合掐断，而不是模型正常结束。
+    // 这一条以前完全没有痕迹，Paseo 侧只显示 "Provider turn failed"。
+    if (reason !== 'completed' && reconnects > 0 && now() - lastDisconnectAt < 60_000) {
+      interrupted = true;
+      notice('DSH 桌面端重启/连接中断导致本轮提前结束；已产出的内容保留，可直接重发', 'warning');
+    }
   } finally {
     deps.signal?.removeEventListener('abort', onAbort);
     if (timer) clearInterval(timer);
     preview.flush();
     try { follow.close(); } catch {}
     flushPending(pending, paseoId, emit);
+    const level = reason === 'completed' && !interrupted ? 'info' : 'warn';
+    const fields = {
+      session: paseoId,
+      dsh: dshId,
+      reason,
+      interrupted,
+      reconnects,
+      durationMs: now() - startedAt,
+      lastSeq: state ? state.lastSeq : -1,
+      pendingTools: pending.size,
+    };
+    if (level === 'info') logInfo('turn end', fields);
+    else logWarn('turn end', fields);
   }
-  return { reason };
+  return { reason, reconnects, interrupted };
 }
 
 /** 轮询 DSH 会话，把新增事件按序推给 Paseo（收到助手回复后再多等一轮即收工）。
@@ -1327,7 +1403,7 @@ export async function streamNewEvents(
     if (sawReplyText && idle >= 5) break;
     await new Promise((r) => setTimeout(r, pollMs));
   }
-  console.error('[dsh] stream ended at seq', lastSeq, 'replyText=', sawReplyText, 'turnEnd=', sawTurnEnd);
+  logDebug('stream ended', { seq: lastSeq, replyText: sawReplyText, turnEnd: sawTurnEnd });
 }
 
 /** 取会话当前最大 seq —— 作为「本次提问之后」的起点。 */

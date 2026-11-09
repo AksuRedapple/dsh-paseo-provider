@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.7.0 — 2026-11-10
+
+线上日志复盘（11-07 ~ 11-09，108 次提问 / 7 次回合失败）后的一轮「可解释性 + 韧性」修复：
+
+- **断线重连会重新解析端点**：DSH 桌面端重启会换 launch token（→ 新 `dsh-auth` cookie），端口也可能变。此前 `followSession` 重连只复用首连的 url/cookie，接不回去就把回合判死——真机 4 次回合失败都发生在 DSH 进程重启的同一秒（`websocket closed (1006)`）。现在新增 `FollowOptions.resolveEndpoint`，重连前重新 discovery；解析失败沿用旧端点继续退避重试。
+- **回合失败不再静默**：`runTurn` 结束时输出结构化日志 `turn end reason=... interrupted=... reconnects=... durationMs=... lastSeq=...`；断线 60s 内收工会被标记为「DSH 重启打断」，向用户发一条 warning notice，`prompt_result` 的错误文案也会说明是连接中断。
+- **`interrupt` 后立刻发消息不再误判 busy**：上一轮的 `abort → finally` 是异步的，直接判定 `session busy` 会把用户的正常操作打成失败（真机两次）。现在先等上一轮收尾（上限 3 秒）再判忙，仍有并发回合才回 `dsh/busy`。
+- **结构化日志**：所有插件日志统一成 `[dsh] <event> key=value`（可 grep / awk），级别由 `DSH_LOG_LEVEL` 控制（`debug|info|warn|error`，默认 `info`）；`observer stop`、`turn end`、`request.completed <ms>` 等缺失的事件补齐。日志仍不打印 prompt 正文 / token / cookie。
+- Tests: 54 tests / 10 files.
+
 ## 2.6.0 — 2026-11-04
 
 - Live read-only mirroring: after a session is opened, a persistent follow keeps streaming DSH native turns into the Paseo timeline. Turns started in DSH Desktop (or any other client) now appear in Paseo as they happen, with reasoning, assistant text, tool cards, usage, and turn start/end.

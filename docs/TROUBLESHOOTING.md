@@ -51,11 +51,37 @@ inspector: source state exceeds the source-frame byte limit
 - 锁定更新（无 sudo）：把 `~/Library/Caches/@deepseek-aidsh-desktop-updater` 与 `com.deepseek.dsh.ShipIt` 设为只读，并禁用 pending；app bundle 受 macOS App Management 保护，用户级 `chflags/chmod` 会被拒；需要硬锁时用 `sudo chflags uchg "/Applications/DeepSeek Harness.app"`（或 hosts 阻断下载域）；
 - 不要通过改 provider 绕过：DSH 后端没起时 provider 只能报 unavailable。
 
-## 5. 收集证据
+## 5. 回合失败 / 「Provider turn failed」
+
+从 v2.7.0 起，每轮结束都有一条 `turn end`，先看它：
+
+```bash
+paseo plugin logs dsh-provider | grep "turn end"
+# [dsh] turn end session=p1 dsh=session-... reason=canceled interrupted=true reconnects=1 durationMs=4200 lastSeq=1731 pendingTools=0
+```
+
+| 字段 | 含义 |
+|---|---|
+| `reason` | `completed` / `canceled` / `failed` / `timeout` |
+| `reconnects` | 本轮内 mux 断线重连次数（>0 说明连接抖过） |
+| `interrupted` | 断线后 60s 内收工 → 判为「DSH 重启打断」，Paseo 侧也会收到 warning notice |
+| `durationMs` | 本轮真实耗时（对照 Paseo 显示是否冻结） |
+| `lastSeq` | 收工时的 DSH 事件水位 |
+
+常见组合：
+
+- `reason=canceled reconnects=0 interrupted=false`：用户点了停止，正常。
+- `reason=* interrupted=true reconnects>=1`：DSH 桌面端重启（或后端挂了）把回合掐断。查 `net-tune.log` / `dsh-web.log` 里是否有新 pid，重启后直接重发即可。
+- `reason=timeout`：超过 6 小时预算或 idle 兜底。若确属长任务，把 `DSH_STEER_BUDGET_MS` 调大。
+- 完全没有 `turn end` 行：prompt 没被 DSH 接受（看同一 session 的 `input failed` / `follow error`）。
+
+日志级别用 `DSH_LOG_LEVEL` 控制（`debug|info|warn|error`，默认 `info`）：想看每次 observer 起停、上下文占用，设 `debug`。
+
+## 6. 收集证据
 
 ```bash
 paseo plugin logs dsh-provider
 tail -100 ~/.paseo/daemon.log
 ```
 
-提 issue 时请附：`node -v`、Paseo 版本、DSH 版本、插件日志中 `endpoint ...` / `Plugin ready` / `stream ended` 行。
+提 issue 时请附：`node -v`、Paseo 版本、DSH 版本、插件日志中 `endpoint ...` / `turn end ...` / `follow error ...` 行。
