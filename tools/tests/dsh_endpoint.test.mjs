@@ -52,6 +52,18 @@ test('endpoint-2: 默认日志路径与覆盖', () => {
   assert.ok(linux.includes('/home/example/.local/share/DeepSeek Harness/logs/dsh-web.log'));
 });
 
+test('endpoint-2b: userData 兜底路径（stdout 落在 app.getPath("userData")/logs 的版本）', () => {
+  const mac = webLogCandidates({ platform: 'darwin', home: '/home/example', env: {} });
+  assert.ok(mac.includes('/home/example/Library/Application Support/@deepseek-ai/dsh-desktop/logs/dsh-web.log'));
+  assert.ok(mac.some((p) => p.includes('Library/Logs/deepseek-harness/')), '小写应用名也要试');
+
+  const linux = webLogCandidates({ platform: 'linux', home: '/home/example', env: {} });
+  assert.ok(linux.includes('/home/example/.config/@deepseek-ai/dsh-desktop/logs/dsh-web.log'));
+
+  const win = webLogCandidates({ platform: 'win32', home: 'C:\\Users\\example', env: {} });
+  assert.ok(win.some((p) => p.includes('@deepseek-ai/dsh-desktop')), 'Windows 也要有 userData 兜底');
+});
+
 test('endpoint-3: 显式 env 覆盖优先', async () => {
   const ep = await resolveDshEndpoint({ env: { DSH_BASE: 'http://127.0.0.1:1', DSH_MUX: 'ws://127.0.0.1:2/mux', DSH_COOKIE: 'c=1' } });
   assert.deepEqual(ep, { base: 'http://127.0.0.1:1', mux: 'ws://127.0.0.1:2/mux', cookie: 'c=1', source: 'env' });

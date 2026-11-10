@@ -1,0 +1,69 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="860" height="400" viewBox="0 0 860 400" role="img" aria-label="DSH provider architecture">
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#6b7a8f"/>
+    </marker>
+    <style>
+      .box   { fill:#ffffff; stroke:#c3ccd8; stroke-width:1.5; rx:10; }
+      .box2  { fill:#f7f9fc; stroke:#c3ccd8; stroke-width:1.5; rx:10; }
+      .title { font:600 14px ui-sans-serif,-apple-system,Segoe UI,Roboto,sans-serif; fill:#1f2933; }
+      .sub   { font:12px ui-monospace,SFMono-Regular,Menlo,monospace; fill:#52606d; }
+      .tag   { font:11px ui-sans-serif,-apple-system,Segoe UI,Roboto,sans-serif; fill:#7b8794; }
+      .line  { stroke:#6b7a8f; stroke-width:1.5; fill:none; }
+      .dash  { stroke:#c3ccd8; stroke-width:1.2; fill:none; stroke-dasharray:4 4; }
+    </style>
+  </defs>
+
+  <rect x="0" y="0" width="860" height="400" fill="#fbfcfe"/>
+
+  <!-- Paseo daemon -->
+  <rect class="box" x="24" y="120" width="170" height="120"/>
+  <text class="title" x="40" y="148">Paseo daemon</text>
+  <text class="sub" x="40" y="172">agent runtime</text>
+  <text class="sub" x="40" y="192">timeline · turns</text>
+  <text class="sub" x="40" y="212">usage · notices</text>
+
+  <!-- provider plugin -->
+  <rect class="box2" x="250" y="60" width="300" height="240"/>
+  <text class="title" x="266" y="86">dsh-provider (plugin)</text>
+
+  <rect class="box" x="268" y="100" width="264" height="52"/>
+  <text class="sub" x="280" y="122">provider.ts · runTurn()</text>
+  <text class="tag" x="280" y="140">prompt_result · turn state</text>
+
+  <rect class="box" x="268" y="162" width="264" height="48"/>
+  <text class="sub" x="280" y="183">turn-state.mjs</text>
+  <text class="tag" x="280" y="199">echo · idle · 6h budget</text>
+
+  <rect class="box" x="268" y="220" width="264" height="48"/>
+  <text class="sub" x="280" y="241">dsh-client.ts · dsh-follow.mjs</text>
+  <text class="tag" x="280" y="257">HTTP RPC (brotli) · WS mux</text>
+
+  <!-- DSH desktop -->
+  <rect class="box" x="620" y="90" width="210" height="120"/>
+  <text class="title" x="636" y="118">DSH desktop app</text>
+  <text class="sub" x="636" y="142">127.0.0.1:8780</text>
+  <text class="tag" x="636" y="162">/api/&lt;method&gt;</text>
+  <text class="tag" x="636" y="180">/api/remote.mux</text>
+
+  <!-- log -->
+  <rect class="box" x="620" y="250" width="210" height="86"/>
+  <text class="sub" x="636" y="276">dsh-web.log</text>
+  <text class="tag" x="636" y="296">dsh web: …?token=…</text>
+  <text class="tag" x="636" y="314">→ dsh-auth cookie</text>
+
+  <!-- arrows -->
+  <path class="line" d="M 194 150 C 220 150, 226 126, 250 126" marker-end="url(#arrow)"/>
+  <text class="tag" x="196" y="128">provider events</text>
+
+  <path class="line" d="M 250 168 C 226 168, 220 190, 194 190" marker-end="url(#arrow)"/>
+  <text class="tag" x="200" y="208">send()</text>
+
+  <path class="line" d="M 532 236 C 570 236, 580 170, 620 156" marker-end="url(#arrow)"/>
+  <text class="tag" x="546" y="206">HTTP + WS</text>
+
+  <path class="line" d="M 620 288 C 580 288, 570 262, 532 250" marker-end="url(#arrow)"/>
+  <text class="tag" x="548" y="276">token → cookie</text>
+
+  <text class="tag" x="24" y="372">The plugin only talks to the local desktop app: no CLI, no DSH profile changes, no telemetry.</text>
+</svg>

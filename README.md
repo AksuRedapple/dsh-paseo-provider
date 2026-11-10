@@ -21,8 +21,30 @@
 ## 要求
 
 - Node.js ≥ 22
-- **DSH 桌面版正在运行**（macOS 已验证；其他平台需设置 `DSH_WEB_LOG` 或 `DSH_BASE`/`DSH_MUX`）
+- **DSH 桌面版正在运行**（不是 CLI）
 - Paseo daemon ≥ 0.14（已在 0.14 / 0.15 实测）
+
+### 兼容矩阵
+
+| 平台 | 日志自动发现 | 状态 |
+|---|---|---|
+| macOS | `~/Library/Logs/DeepSeek Harness/dsh-web.log`、小写应用名、`~/Library/Application Support/@deepseek-ai/dsh-desktop/logs/` | **已验证**（DSH 0.2.1-rc.x + Paseo 0.14/0.15） |
+| Linux | `$XDG_CONFIG_HOME/…/logs/` 与 `~/.local/share/…/logs/`（应用名大小写两种）+ userData 兜底 | 路径已覆盖，**未在真机验证** |
+| Windows | `%APPDATA%` 与 `%LOCALAPPDATA%` 下的两种应用名 + userData 兜底 | 路径已覆盖，**未在真机验证** |
+
+发现失败时，插件日志会打印尝试过的路径：
+
+```bash
+paseo plugin logs dsh-provider | grep "no launch token"
+```
+
+任一路径可用 `DSH_WEB_LOG` 覆盖；整条自动发现在 `DSH_BASE`/`DSH_MUX` 下可完全跳过。
+
+### 这个插件不适合你，如果……
+
+- **你只装了 `dsh` CLI、没有桌面版** —— 本插件靠桌面版的 launch token 换取 cookie，没有 CLI/无头模式。请用基于 CLI 或 ACP 的 provider，例如 `geoqiao/deepseek-harness`、`liuxing7954/dsh-paseo`、`dsh-external/dsh-paseo`。
+- **你要在服务器上跑** —— 同上，桌面版起不来就没法用。
+- **你需要权限审批 / MCP / 斜杠命令** —— DSH desktop 的 preset 自动执行工具，且没有对应的 RPC（见「已知限制」）。
 
 插件不安装 DSH、不修改 DSH profile；它只读取本机 DSH web 日志里的 launch token 并在 loopback 换取 cookie。
 
@@ -55,24 +77,13 @@ paseo provider ls          # 应看到 dsh available
 
 ## 架构
 
-```
-Paseo daemon
-   │  provider events (timeline.item / session.turn / notice / prompt_result / usage)
-   ▼
-dsh-provider  ┌───────────────┐      ┌──────────────────────────┐
-(index.server)│ provider.ts   │─────▶│ dsh-follow.mjs           │──▶ DSH mux (8780)
-              │ runTurn()     │      │ snapshot/event/assistant │
-              │ turn-state.mjs│◀─────│ reconnect / reset detect │
-              └───────┬───────┘      └──────────────────────────┘
-                      │
-              ┌───────▼───────┐      HTTP RPC (brotli, cookie)
-              │ dsh-client.ts │─────▶ session/list · create · prompt · modelCatalog
-              └───────────────┘
-                      ▲
-              ┌───────┴────────┐
-              │ dsh-endpoint   │  dsh-web.log token → dsh-auth cookie → 127.0.0.1:8780
-              └────────────────┘
-```
+<p align="center"><img src="docs/arch.svg" alt="dsh-provider architecture" width="820"></p>
+
+- `provider.ts` —— Paseo `ProviderConnection` 实现：`send()` 收输入，事件走 `onEvent`；`runTurn()` 驱动一轮。
+- `turn-state.mjs` —— 纯状态机：回声抑制、`turn/end` 权威收工、idle 兜底、6 小时预算。
+- `dsh-client.ts` —— HTTP RPC（响应是 brotli 且**没有** `Content-Encoding` 头）。
+- `dsh-follow.mjs` —— 持久 WS mux：snapshot → event / assistant-stream，断线指数退避。
+- `dsh-endpoint.mjs` —— 从 `dsh-web.log` 读 launch token → 换 `dsh-auth` cookie → 连 `127.0.0.1:8780`。
 
 ## DSH 协议速记（实测）
 
@@ -87,7 +98,7 @@ dsh-provider  ┌───────────────┐      ┌──
 
 | 变量 | 默认 | 说明 |
 |---|---|---|
-| `DSH_WEB_LOG` | 平台日志路径 | DSH web 日志（token 来源）；macOS 默认 `~/Library/Logs/DeepSeek Harness/dsh-web.log` |
+| `DSH_WEB_LOG` | 平台自动发现（见兼容矩阵） | DSH web 日志（token 来源）；发现失败时优先设这个 |
 | `DSH_BASE` / `DSH_MUX` | 自动发现 | 显式覆盖端点（设置后不再读日志） |
 | `DSH_COOKIE` | 自动交换 | 显式 `dsh-auth-*` cookie；跳过 token 交换 |
 | `DSH_DEFAULT_CWD` | `$HOME` | 新建会话的默认 cwd |
@@ -106,7 +117,7 @@ node --test tools/tests/provider_stream.test.mjs
 ## 已知限制
 
 - **必须有 DSH 桌面版在运行**；无头/CLI 用户请使用官方 ACP 方案（本仓库 v1.3.0 及以前提供过 ACP 适配器）。
-- 真机只在 macOS + Node 26 验证；Windows/Linux 需要显式 `DSH_WEB_LOG` 或 `DSH_BASE`。
+- 真机只在 macOS + Node 26 验证。Windows/Linux 的日志候选路径已按 Electron `app.getPath('logs')`/`userData` 覆盖并单测，但**没有真机跑过**；发现失败时用 `DSH_WEB_LOG` 或 `DSH_BASE`/`DSH_MUX` 显式指定。
 - DSH 是私有协议；rc 升级可能改变日志/字段，未知事件会告警而不是猜测。
 - 快照窗口由 DSH 控制，超长历史会截断（只记日志，不弹 notice，不分页）。
 - 权限审批、MCP、斜杠命令、revert/archive 未做（DSH desktop preset 自动执行 / 无对应端点）。

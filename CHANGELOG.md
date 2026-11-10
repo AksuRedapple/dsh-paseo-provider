@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.8.3 — 2026-11-10
+
+面向「别人装得上、装不上知道为什么」的一轮：
+
+- **跨平台日志候选补齐**：除 Electron `app.getPath('logs')` 的三个平台路径外，补上 `userData/logs` 兜底（macOS `~/Library/Application Support/@deepseek-ai/dsh-desktop/logs/`、Windows `%APPDATA%`/`%LOCALAPPDATA%`、Linux `$XDG_CONFIG_HOME`），并同时尝试应用名 `DeepSeek Harness` / `deepseek-harness`。
+- **发现失败不再静默**：读不到 launch token 时，插件日志打印尝试过的全部路径，直接告诉用户该把 `DSH_WEB_LOG` 指到哪。
+- **降级指路**：`provider status` 的诊断文案明确「本插件需要桌面版在运行；只有 CLI 的用户应改用 CLI/ACP 的 provider」，并对 token 过期给出「重启桌面版后 reload 插件」的可操作提示。
+- **README**：新增兼容矩阵（macOS 已验证 / Linux·Windows 路径已覆盖未真机验证）、「这个插件不适合你，如果…」一节、架构图 `docs/arch.svg`。
+- Tests: 59 tests / 10 files.
+
 ## 2.8.2 — 2026-11-10
 
 - 鉴权失效的错误提示不再写死某台机器的 launchd label（`release-check` 脱敏扫描拦下的真问题）：改成 `DSH_LAUNCHD_LABEL` 环境变量或 `<DSH 的 launchd label>` 占位。

@@ -107,21 +107,39 @@ export interface DshModelCatalog {
   groups?: Array<{ id: string; name: string; models?: DshCatalogModel[] }>;
 }
 
+/** 降级指引：这个 provider 只服务"桌面版正在运行"的场景，别让只有 CLI 的用户在这上面耗时间。 */
+export const DESKTOP_ONLY_HINT =
+  'This plugin needs the DSH desktop app running on this machine; '
+  + 'a CLI-only dsh setup should use a CLI/ACP based provider instead.';
+
 /** 轻量探活：DSH 根路径；>=500 或网络错误视为不可用，401/403 给出认证诊断。 */
 export async function probeDsh(timeoutMs = 1500): Promise<{ ok: boolean; diagnostic?: string }> {
   try {
     const ep = await getDshEndpoint();
+    if (ep.source === 'legacy-fallback') {
+      // 没读到 launch token：桌面版没起，或启动方式绕过了日志（open -a / 双击）
+      return {
+        ok: false,
+        diagnostic: `no DSH launch token found in the platform log paths; set DSH_WEB_LOG, or start the desktop app through launchd. ${DESKTOP_ONLY_HINT}`,
+      };
+    }
     const res = await fetch(`${ep.base}/`, {
       signal: AbortSignal.timeout(timeoutMs),
       ...(ep.cookie ? { headers: { cookie: ep.cookie } } : {}),
     });
     if (res.status === 401 || res.status === 403) {
-      return { ok: false, diagnostic: `DSH reachable but authentication failed (${ep.source}); restart the desktop app or set DSH_COOKIE` };
+      return {
+        ok: false,
+        diagnostic: `DSH reachable but authentication failed (${ep.source}); the launch token is stale — restart the desktop app, then reload this plugin (or set DSH_COOKIE)`,
+      };
     }
-    if (res.status >= 500) return { ok: false, diagnostic: `DSH upstream HTTP ${res.status}` };
+    if (res.status >= 500) return { ok: false, diagnostic: `DSH upstream HTTP ${res.status}. ${DESKTOP_ONLY_HINT}` };
     return { ok: true };
   } catch (e) {
-    return { ok: false, diagnostic: `DSH unreachable: ${e instanceof Error ? e.message : String(e)}` };
+    return {
+      ok: false,
+      diagnostic: `DSH desktop app unreachable (${e instanceof Error ? e.message : String(e)}). ${DESKTOP_ONLY_HINT}`,
+    };
   }
 }
 

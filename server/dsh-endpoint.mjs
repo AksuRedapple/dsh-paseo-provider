@@ -26,23 +26,38 @@ export function parseWebLog(text) {
  */
 export function webLogCandidates({ platform = process.platform, home = os.homedir(), env = process.env } = {}) {
   const out = [];
+  // Electron 的 app.getPath('logs')：macOS 是 ~/Library/Logs/<app>，
+  // Windows 是 %APPDATA%\<app>\logs，Linux 是 $XDG_CONFIG_HOME/<app>/logs。
+  // 部分版本把 stdout 落在 userData 下（app.getPath('userData')/logs），这里一并给。
+  const APP_NAMES = ['DeepSeek Harness', 'deepseek-harness'];
+  const USERDATA = path.join('@deepseek-ai', 'dsh-desktop', 'logs', 'dsh-web.log');
   if (env.DSH_WEB_LOG) out.push(env.DSH_WEB_LOG);
   if (platform === 'darwin') {
-    out.push(path.join(home, 'Library', 'Logs', 'DeepSeek Harness', 'dsh-web.log'));
+    for (const name of APP_NAMES) out.push(path.join(home, 'Library', 'Logs', name, 'dsh-web.log'));
+    out.push(path.join(home, 'Library', 'Application Support', USERDATA));
   } else if (platform === 'win32') {
     const roaming = env.APPDATA || path.join(home, 'AppData', 'Roaming');
     const local = env.LOCALAPPDATA || path.join(home, 'AppData', 'Local');
-    out.push(path.join(roaming, 'DeepSeek Harness', 'logs', 'dsh-web.log'));
-    out.push(path.join(roaming, 'deepseek-harness', 'logs', 'dsh-web.log'));
-    out.push(path.join(local, 'DeepSeek Harness', 'logs', 'dsh-web.log'));
+    for (const name of APP_NAMES) {
+      out.push(path.join(roaming, name, 'logs', 'dsh-web.log'));
+      out.push(path.join(local, name, 'logs', 'dsh-web.log'));
+    }
+    out.push(path.join(roaming, USERDATA));
+    out.push(path.join(local, USERDATA));
   } else {
     const config = env.XDG_CONFIG_HOME || path.join(home, '.config');
-    out.push(path.join(config, 'DeepSeek Harness', 'logs', 'dsh-web.log'));
-    out.push(path.join(config, 'deepseek-harness', 'logs', 'dsh-web.log'));
-    out.push(path.join(home, '.local', 'share', 'DeepSeek Harness', 'logs', 'dsh-web.log'));
-    out.push(path.join(home, '.local', 'share', 'deepseek-harness', 'logs', 'dsh-web.log'));
+    for (const name of APP_NAMES) {
+      out.push(path.join(config, name, 'logs', 'dsh-web.log'));
+      out.push(path.join(home, '.local', 'share', name, 'logs', 'dsh-web.log'));
+    }
+    out.push(path.join(config, USERDATA));
   }
   return [...new Set(out)];
+}
+
+/** 人类可读的候选清单（发现失败时写进插件日志，方便用户照着设 DSH_WEB_LOG）。 */
+export function describeWebLogCandidates(opts = {}) {
+  return webLogCandidates(opts);
 }
 
 /** 默认取第一个候选（兼容旧调用）；实际解析会依次尝试全部候选。 */
@@ -97,6 +112,7 @@ export async function resolveDshEndpoint(opts = {}) {
     } catch {}
   }
   if (!parsed) {
+    console.error(`[dsh] no launch token in ${candidates.length} candidate log(s); set DSH_WEB_LOG to override (tried: ${candidates.join(', ')})`);
     return { base: LEGACY_BASE, mux: LEGACY_MUX, cookie: env.DSH_COOKIE, source: 'legacy-fallback' };
   }
 
