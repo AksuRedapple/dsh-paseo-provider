@@ -736,3 +736,35 @@ test('run-6: 正常完成不受断线计数影响（completed 不算 interrupted
   assert.equal(res.reconnects, 1);
   assert.equal(res.interrupted, false);
 });
+
+// ---------- 2026-11-10：抛错路径不能记成 completed ----------
+//
+// 真机：DSH 鉴权失效 → follow.ready reject（first snapshot timeout）→ 日志却是
+// `turn end reason=completed lastSeq=-1`，看着像正常收工，误导排障。
+
+test('run-7: runTurn 抛错时 turn end 记 reason=failed + error', async () => {
+  const logs = [];
+  const orig = console.error;
+  console.error = (line) => { logs.push(String(line)); };
+  try {
+    const fakeFollow = {
+      ready: Promise.reject(new Error('followSession: first snapshot timeout')),
+      close() {},
+      [Symbol.asyncIterator]() { return { next: async () => ({ value: undefined, done: true }) }; },
+    };
+    await assert.rejects(
+      () => runTurn('paseo-err', 'dsh-err', 'hello', () => {}, {
+        follow: () => fakeFollow,
+        prompt: async () => {},
+        tickMs: 5,
+      }),
+      /first snapshot timeout/,
+    );
+  } finally {
+    console.error = orig;
+  }
+  const line = logs.find((l) => l.includes('turn end'));
+  assert.ok(line, '必须留下 turn end 行');
+  assert.match(line, /reason=failed/, `抛错必须记 failed：${line}`);
+  assert.match(line, /error="/, `必须带错误内容：${line}`);
+});

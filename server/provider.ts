@@ -1046,6 +1046,11 @@ function startObserver(
   void (async () => {
     const ep = await getDshEndpoint().catch(() => null);
     if (closed) return;
+    if (!ep?.cookie && ep?.source === 'discovered-no-cookie') {
+      logWarn('observer skipped: DSH auth missing', { session: paseoId, dsh: dshId });
+      if (state.observers.get(paseoId) === entry) state.observers.delete(paseoId);
+      return;
+    }
     let connect: ((url: string) => any) | undefined;
     if (ep?.cookie) {
       const { WebSocket: WsWebSocket } = await import('ws');
@@ -1258,6 +1263,14 @@ export async function runTurn(
     const cookie = ep.cookie;
     connect = (url) => new WsWebSocket(url, { headers: { cookie } });
   }
+  // 鉴权断了要一句话说清（2026-11-10 真机：DSH 被 open -a 启动 → 不写新 token →
+  // 换不到 cookie → 所有 RPC 401 → follow 拿不到快照 → 用户只看到 first snapshot timeout）
+  if (!deps.follow && ep && !ep.cookie && ep.source === 'discovered-no-cookie') {
+    throw new Error(
+      'DSH 鉴权失效：launch token 换不到 cookie（多半是 DSH 用 open -a/直接双击启动的，没写新的 dsh web token）。'
+      + '用 launchctl kickstart gui/$(id -u)/com.wuyangbo.dsh-harness 重启 DSH，再 paseo plugin reload dsh-provider',
+    );
+  }
   const follow = (deps.follow || followSession)(dshId, {
     assistantStream: true,
     readyTimeoutMs: 15_000,
@@ -1275,6 +1288,7 @@ export async function runTurn(
   let reconnects = 0;
   let lastDisconnectAt = 0;
   let interrupted = false;
+  let failure: string | undefined;
   let timer: ReturnType<typeof setInterval> | null = null;
 
   const preview = createPreviewStreamer(paseoId, emit);
@@ -1407,6 +1421,11 @@ export async function runTurn(
       interrupted = true;
       notice('DSH 桌面端重启/连接中断导致本轮提前结束；已产出的内容保留，可直接重发', 'warning');
     }
+  } catch (e) {
+    // 抛错路径以前会把 reason 留在 'completed'，日志看着像正常收工（2026-11-10 踩到）
+    failure = errorMessage(e);
+    if (!deps.signal?.aborted) reason = 'failed';
+    throw e;
   } finally {
     deps.signal?.removeEventListener('abort', onAbort);
     if (timer) clearInterval(timer);
@@ -1418,6 +1437,7 @@ export async function runTurn(
       session: paseoId,
       dsh: dshId,
       reason,
+      ...(failure ? { error: failure } : {}),
       interrupted,
       reconnects,
       durationMs: now() - startedAt,

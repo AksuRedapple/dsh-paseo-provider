@@ -1,5 +1,13 @@
 # Changelog
 
+## 2.8.1 — 2026-11-10
+
+真机事故（DSH 被 `open -a` 启动 → 不写新 token → 换不到 cookie → 全链路 401）暴露的两个「误导性日志」：
+
+- **鉴权失效一句话说清**：端点来源是 `discovered-no-cookie` 时，`runTurn` 直接抛「DSH 鉴权失效…用 launchctl kickstart 重启 DSH，再 reload 插件」，不再表现为 15s 后的 `first snapshot timeout`。observer 遇到同一状态直接跳过，不再 401 空转重连。
+- **抛错不再记成 completed**：`runTurn` 的异常路径以前把 `reason` 留在 `completed`（日志 `reason=completed lastSeq=-1`，看着像正常收工）；现在记 `reason=failed` 并带 `error="…"`。
+- Tests: 58 tests / 10 files.
+
 ## 2.8.0 — 2026-11-10
 
 同一轮复盘的后三件（1/2/3）：
