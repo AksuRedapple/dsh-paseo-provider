@@ -13,6 +13,9 @@ paseo plugin logs dsh-provider | grep "endpoint"
 - 没有 `endpoint discovered`：确认 DSH 桌面版在运行，且 `~/Library/Logs/DeepSeek Harness/dsh-web.log` 有 `dsh web: http://...?token=...`；必要时设 `DSH_WEB_LOG`。
 - `legacy-fallback` 且 8781 不通：DSH 后端没起，或本机没有自建代理；官方通道可设 `DSH_BASE`/`DSH_MUX` 兜底。
 - `authentication failed`：token 已过期（DSH 重启过），reload 插件会重新读取日志并换 cookie。
+- 日志里反复出现 `endpoint discovered-no-cookie`：**launch token 换不到 cookie**。最常见原因：DSH 不是由 launchd 启动的（`open -a` / 双击 App），新进程不会把 `dsh web: …?token=` 写进日志 → 插件只能读到旧 token。
+  处置：`launchctl kickstart -k gui/$(id -u)/${DSH_LAUNCHD_LABEL}`（label 见 `launchctl list | grep -i dsh`），确认日志出现新 token，再 `paseo plugin reload dsh-provider`。
+  症状看起来是 15s 后 `followSession: first snapshot timeout`，实际根因在这里。
 - 200 / 连接正常：重新 `paseo plugin reload dsh-provider`，再看日志。
 
 ## 2. 插件加载失败 / 改动不生效

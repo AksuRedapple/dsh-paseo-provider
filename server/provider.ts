@@ -1268,7 +1268,9 @@ export async function runTurn(
   if (!deps.follow && ep && !ep.cookie && ep.source === 'discovered-no-cookie') {
     throw new Error(
       'DSH 鉴权失效：launch token 换不到 cookie（多半是 DSH 用 open -a/直接双击启动的，没写新的 dsh web token）。'
-      + '用 launchctl kickstart gui/$(id -u)/com.wuyangbo.dsh-harness 重启 DSH，再 paseo plugin reload dsh-provider',
+      + '用 launchd 重启 DSH（launchctl kickstart -k gui/$(id -u)/'
+      + (process.env.DSH_LAUNCHD_LABEL || '<DSH 的 launchd label>')
+      + '），再 paseo plugin reload dsh-provider',
     );
   }
   const follow = (deps.follow || followSession)(dshId, {

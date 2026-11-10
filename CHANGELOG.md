@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.8.2 — 2026-11-10
+
+- 鉴权失效的错误提示不再写死某台机器的 launchd label（`release-check` 脱敏扫描拦下的真问题）：改成 `DSH_LAUNCHD_LABEL` 环境变量或 `<DSH 的 launchd label>` 占位。
+- Tests: 58 tests / 10 files.
+
 ## 2.8.1 — 2026-11-10
 
 真机事故（DSH 被 `open -a` 启动 → 不写新 token → 换不到 cookie → 全链路 401）暴露的两个「误导性日志」：
