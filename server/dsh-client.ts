@@ -143,6 +143,32 @@ export async function probeDsh(timeoutMs = 1500): Promise<{ ok: boolean; diagnos
   }
 }
 
+export interface DshCommand {
+  definitionId: string;
+  name: string;
+  description?: string;
+  input?: { hint?: string; attachments?: boolean };
+}
+
+/** DSH 的斜杠命令目录（agentId = DSH session id）。 */
+export async function listCommands(agentId: string): Promise<DshCommand[]> {
+  return rpc<DshCommand[]>('commands/list', { agentId }, 'none');
+}
+
+/** 执行一条 DSH 斜杠命令（line 形如 "/compact" 或 "/goal 新目标"）。
+ *  result.text 是命令自己的回执文案，直接可以展示给用户。 */
+export async function executeCommand(
+  agentId: string,
+  line: string,
+  submittedAttachments: unknown[] = [],
+): Promise<{ commandId: string; result?: { kind?: string; text?: string } }> {
+  return rpc<{ commandId: string; result?: { kind?: string; text?: string } }>(
+    'commands/execute',
+    { agentId, line, submittedAttachments },
+    'none',
+  );
+}
+
 export async function listSessions(): Promise<DshSession[]> {
   const v = await rpc<{ items: DshSession[] }>('session/list');
   return v.items || [];

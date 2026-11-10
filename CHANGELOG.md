@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.9.0 — 2026-11-10
+
+**斜杠命令接通了**（`/compact` 之前只会被当成普通文本发给模型，看起来"没生效"）：
+
+- 新增 capability `prompt.command`；打开会话时从 DSH `commands/list` 广播命令目录（`session.commands`），带 `argumentHint`（如 `/goal` 的 `[<objective>|clear]`）。
+- Paseo 发来的命令输入（`{type:'command', name, arguments}`）改走 DSH `commands/execute`（`{agentId, line, submittedAttachments}`），不再走 `session/prompt`。
+- 命令回执（`result.text`）作为一条 `assistant_message` 进时间线；失败给 `dsh/command` + 可读 notice。
+- 实测（DSH 0.2.1-rc.5）：`/goal`、`/compact`、`/plan` 都返回 `{kind:'success', text}`。
+- Tests: 60 tests / 10 files.
+
 ## 2.8.3 — 2026-11-10
 
 面向「别人装得上、装不上知道为什么」的一轮：

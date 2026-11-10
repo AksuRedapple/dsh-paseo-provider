@@ -361,3 +361,50 @@ test('lifecycle: selectModel 失败 → 保留当前模型并刷新 session.conf
 
   await conn.send({ type: 'session.close', requestId: 'r9', sessionId: 'p1' });
 });
+
+// ---------- 2026-11-10：斜杠命令（/compact 等）接通 DSH commands/execute ----------
+//
+// 之前没声明 prompt.command：Paseo 把 "/compact" 当普通文本发给 DSH，看起来"没压缩"。
+
+test('lifecycle: 斜杠命令走 commands/execute 而不是普通 prompt', async (t) => {
+  const mock = await startMockDsh(() => {});
+  process.env.DSH_BASE = `http://127.0.0.1:${mock.port}`;
+  process.env.DSH_MUX = `ws://127.0.0.1:${mock.port}`;
+  t.after(() => mock.close());
+
+  const { createProvider } = await import('../../server/provider.ts');
+  const conn = await createProvider().connect({});
+  const events = [];
+  conn.onEvent((e) => events.push(e));
+
+  await conn.send({
+    type: 'session.open', requestId: 'r1', sessionId: 'p1',
+    config: { cwd: '/tmp' }, history: 'skip',
+  });
+  await waitFor(events, (e) => e.type === 'session.ready');
+
+  const cmdEvent = await waitFor(events, (e) => e.type === 'session.commands');
+  assert.ok(cmdEvent.commands.some((c) => c.name === 'compact'), '必须广播 compact 命令');
+  const goal = cmdEvent.commands.find((c) => c.name === 'goal');
+  assert.equal(goal.argumentHint, '[<objective>|clear]', 'argumentHint 来自 DSH input.hint');
+
+  await conn.send({
+    type: 'session.prompt', sessionId: 'p1',
+    prompt: { clientMessageId: 'cmd-1', delivery: 'auto', input: { type: 'command', name: 'compact', arguments: '' } },
+  });
+
+  const done = await waitFor(events,
+    (e) => e.type === 'session.prompt_result' && e.clientMessageId === 'cmd-1');
+  assert.equal(done.result.type, 'completed');
+
+  const call = mock.calls.find((c) => c.method === 'commands/execute');
+  assert.ok(call, '必须调用 commands/execute');
+  assert.equal(call.args.line, '/compact');
+  assert.equal(call.args.agentId, 'mock-session');
+  assert.ok(!mock.calls.some((c) => c.method === 'session/prompt'), '不得把命令当普通文本发给模型');
+
+  const said = events.filter((e) => e.type === 'timeline.item' && e.item.type === 'assistant_message');
+  assert.ok(said.some((e) => /No compactable history/.test(e.item.text)), '命令回执要进时间线');
+
+  await conn.send({ type: 'session.close', requestId: 'r9', sessionId: 'p1' });
+});

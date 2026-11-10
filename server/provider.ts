@@ -7,7 +7,7 @@
  *  · send() 只报"收到"，结果一律走 onEvent 推**完整快照**
  *  · ProviderSessionSummary = { persistence:{version,data}, cwd, title?, description?, updatedAt?(ISO) }
  */
-import { listSessions, promptSession, createSession, interruptSession, probeDsh, modelCatalog, selectModel, renameSession } from './dsh-client';
+import { listSessions, promptSession, createSession, interruptSession, probeDsh, modelCatalog, selectModel, renameSession, listCommands, executeCommand } from './dsh-client';
 import type { DshModelCatalog, DshPromptBlock } from './dsh-client';
 import { fetchSessionRecords, fetchSessionSnapshot, followSession, type DshEvent } from './dsh-ws';
 import { getDshEndpoint } from './dsh-endpoint.mjs';
@@ -36,6 +36,7 @@ const CAPABILITIES = [
   'prompt.message',
   'prompt.image',
   'prompt.steer',
+  'prompt.command',
   'session.configure',
 ] as const;
 
@@ -316,6 +317,22 @@ export function createProvider() {
                   if (!sawTodo) emitTodos();
                 }
 
+                // DSH 的斜杠命令（/compact、/goal、/plan…）。Paseo 只认声明过的命令；
+                // 不声明时 /compact 会被当普通文本发出去，用户看到的就是"没压缩"。
+                const cmds = await listCommands(dshId).catch(() => [] as any[]);
+                if (cmds.length) {
+                  emit({
+                    type: 'session.commands',
+                    sessionId: sid,
+                    commands: cmds.map((c) => ({
+                      name: c.name,
+                      description: c.description || c.name,
+                      ...(c.input?.hint ? { argumentHint: c.input.hint } : {}),
+                    })),
+                  });
+                  logDebug('session.commands', { session: sid, count: cmds.length });
+                }
+
                 emit({ type: 'session.ready', sessionId: sid, requestId: input.requestId });
                 // 导入时若回合仍在进行，先宣告 turn started，让 Paseo 显示 running；
                 // 之后由观察者把同一个 turn 关掉。
@@ -331,9 +348,55 @@ export function createProvider() {
 
               case 'session.prompt': {
                 const p = input.prompt || {};
-                const { blocks, text } = extractContent(p);
                 const dshId = openSessions.get(input.sessionId) || input.sessionId;
                 const clientMessageId = p.clientMessageId ?? '';
+
+                // 斜杠命令：走 DSH 的 commands/execute，而不是当普通文本发给模型
+                if (p.input?.type === 'command') {
+                  const name = String(p.input.name || '').replace(/^\//, '');
+                  const args = String(p.input.arguments ?? '');
+                  const line = `/${name}${args ? ` ${args}` : ''}`;
+                  logInfo('command', { session: input.sessionId, dsh: dshId, name, argsChars: args.length });
+                  try {
+                    const r = await executeCommand(dshId, line);
+                    const text = r.result?.text || '';
+                    if (text) {
+                      emit({
+                        type: 'timeline.item',
+                        sessionId: input.sessionId,
+                        item: { type: 'assistant_message', id: `cmd-${r.commandId || Date.now()}`, text },
+                      });
+                    }
+                    emit({
+                      type: 'session.prompt_result',
+                      sessionId: input.sessionId,
+                      clientMessageId,
+                      result: { type: 'completed' },
+                    });
+                  } catch (e) {
+                    const msg = errorMessage(e);
+                    logWarn('command failed', { session: input.sessionId, name, error: msg });
+                    emit({
+                      type: 'session.notice',
+                      sessionId: input.sessionId,
+                      notice: {
+                        id: `cmd-err-${Date.now()}`,
+                        severity: 'warning',
+                        title: 'DSH',
+                        description: `命令 /${name} 失败：${msg}`,
+                      },
+                    });
+                    emit({
+                      type: 'session.prompt_result',
+                      sessionId: input.sessionId,
+                      clientMessageId,
+                      result: { type: 'failed', error: { message: `命令 /${name} 失败：${msg}`, code: 'dsh/command' } },
+                    });
+                  }
+                  break;
+                }
+
+                const { blocks, text } = extractContent(p);
                 logInfo('prompt', { session: input.sessionId, dsh: dshId, chars: text.length, blocks: blocks.length, delivery: p.delivery });
                 if (!blocks.length) {
                   emit({

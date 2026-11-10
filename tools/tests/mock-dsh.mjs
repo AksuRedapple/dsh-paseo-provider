@@ -69,7 +69,15 @@ export async function startMockDsh(onPrompt, opts = {}) {
         res.end(JSON.stringify({ result: { ok: false, error: failWith } }));
         return;
       }
-      const value = method === 'session/create' ? { sessionId: opts.sessionId || 'mock-session' }
+      const value = method === 'commands/list' ? (opts.commands || [
+        { definitionId: '@deepseek-ai/dsh-command-compact', name: 'compact', description: 'Compact older conversation history' },
+        { definitionId: '@deepseek-ai/dsh-command-goal', name: 'goal', description: 'Set or view the goal', input: { hint: '[<objective>|clear]' } },
+      ])
+        : method === 'commands/execute' ? {
+          commandId: 'cmd-1',
+          result: { kind: 'success', text: opts.commandText || 'No compactable history yet.' },
+        }
+        : method === 'session/create' ? { sessionId: opts.sessionId || 'mock-session' }
         : method === 'session/list' ? { items: sessions }
         : method === 'session/modelCatalog' ? (opts.catalog || MOCK_CATALOG)
         : method === 'session/rename' ? { title: args.title, seq: 0 }
