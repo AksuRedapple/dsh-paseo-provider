@@ -1770,11 +1770,12 @@ function extractContent(prompt: any): { blocks: DshPromptBlock[]; text: string }
       }
     }
   }
-  // 去掉 Paseo 注入的 <paseo-system …>…</paseo-system> 包装，只留用户真正说的话
+  // 只剥 Paseo 自己的包装标签（<paseo-system …>、<paseo_voice_mode> 等）。
+  // 不能用通用 `<[^>]+>`：那会把用户正文里的代码吃掉（实测 `Array<string>` → `Array`；
+  // fork 出来的 chat history 里全是代码，影响更大）。
   const text = rawText
     .join('\n')
-    .replace(/<\/?paseo-system[^>]*>/g, '')
-    .replace(/<[^>]+>/g, '')
+    .replace(/<\/?paseo[-_][a-z0-9_-]*[^>]*>/gi, '')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
   if (text) blocks.unshift({ type: 'text', text });
@@ -1812,9 +1813,7 @@ export async function fillMissingTitles(
           .filter((c: any) => c.type === 'text')
           .map((c: any) => c.text)
           .join(' ')
-          .replace(/<paseo-system[^>]*>/g, '')
-          .replace(/<\/paseo-system>/g, '')
-          .replace(/<[^>]+>/g, ' ')
+          .replace(/<\/?paseo[-_][a-z0-9_-]*[^>]*>/gi, '')
           .replace(/\s+/g, ' ')
           .trim();
         if (txt) {

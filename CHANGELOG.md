@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.10.1 — 2026-11-10
+
+- **不再吃掉正文里的代码**：prompt 清洗以前用通用 `<[^>]+>` 剥 Paseo 的包装标签，`Array<string>` 会变成 `Array`、`<div class="x">` 整段消失。现在只剥 `<paseo-…>` / `<paseo_…>` 这类自家标签；标题补全里的同类清洗一并修正。对 fork 出来的 chat history（通篇代码）影响最大。
+- Tests: 64 tests / 10 files.
+
 ## 2.10.0 — 2026-11-10
 
 - **外部斜杠命令也镜像进时间线**：DSH 桌面版（或其他客户端）里执行 `/compact`、`/goal` 时，Paseo 以前完全看不到。现在 `command/run` → 一条「用户命令」，`command/done` → 一条命令回执，并顺带刷新上下文占用。Paseo 自己发起的命令会先暂停镜像，避免同一条命令出现两次。

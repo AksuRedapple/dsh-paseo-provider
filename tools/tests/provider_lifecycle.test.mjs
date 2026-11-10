@@ -508,3 +508,47 @@ test('lifecycle: 文本形式的 /compact 也能走 commands/execute（目录命
 
   await conn.send({ type: 'session.close', requestId: 'r9', sessionId: 'p1' });
 });
+
+// ---------- 2026-11-10：不能把用户正文里的代码当 HTML 剥掉 ----------
+//
+// 以前用通用 `<[^>]+>` 剥 Paseo 包装标签，`Array<string>` 会变成 `Array`，
+// fork 出来的 chat history（全是代码）受损更明显。现在只剥 <paseo-*>/<paseo_*>。
+
+test('lifecycle: 正文里的尖括号（代码/XML）原样到达 DSH', async (t) => {
+  const mock = await startMockDsh((ws, streamId) => {
+    const send = (value) => ws.send(JSON.stringify({ type: 'item', streamId, value }));
+    const now = Date.now();
+    send({ type: 'event', event: { type: 'turn/end', seq: 2, time: now,
+      data: { turn: 1, reason: { kind: 'completed' } } } });
+  });
+  process.env.DSH_BASE = `http://127.0.0.1:${mock.port}`;
+  process.env.DSH_MUX = `ws://127.0.0.1:${mock.port}`;
+  t.after(() => mock.close());
+
+  const { createProvider } = await import('../../server/provider.ts');
+  const conn = await createProvider().connect({});
+  const events = [];
+  conn.onEvent((e) => events.push(e));
+
+  await conn.send({
+    type: 'session.open', requestId: 'r1', sessionId: 'p1',
+    config: { cwd: '/tmp' }, history: 'skip',
+  });
+  await waitFor(events, (e) => e.type === 'session.ready');
+
+  const body = '看下 Array<string> 和 <div class="x"> 这段<paseo-system>注入</paseo-system>';
+  await conn.send({
+    type: 'session.prompt', sessionId: 'p1',
+    prompt: { clientMessageId: 'gt1', delivery: 'auto',
+      input: { type: 'message', content: [{ type: 'text', text: body }] } },
+  });
+  await waitFor(events, (e) => e.type === 'session.prompt_result' && e.clientMessageId === 'gt1');
+
+  const sent = mock.calls.find((c) => c.method === 'session/prompt')?.args;
+  const text = (sent?.content || []).map((c) => c.text || '').join('\n');
+  assert.ok(text.includes('Array<string>'), `泛型不能被吃掉：${text}`);
+  assert.ok(text.includes('<div class="x">'), `HTML 片段不能被吃掉：${text}`);
+  assert.ok(!text.includes('paseo-system'), 'Paseo 自己的包装标签必须剥掉');
+
+  await conn.send({ type: 'session.close', requestId: 'r9', sessionId: 'p1' });
+});
