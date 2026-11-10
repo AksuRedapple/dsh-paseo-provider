@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.10.0 — 2026-11-10
+
+- **外部斜杠命令也镜像进时间线**：DSH 桌面版（或其他客户端）里执行 `/compact`、`/goal` 时，Paseo 以前完全看不到。现在 `command/run` → 一条「用户命令」，`command/done` → 一条命令回执，并顺带刷新上下文占用。Paseo 自己发起的命令会先暂停镜像，避免同一条命令出现两次。
+- `sessionInfo` 拆出两条路径：需要 `running`（判断外部回合）时只查一次 `session/list`；其余场合走单会话 `session/projections`。上下文刷新仍是单会话取值。
+- Tests: 63 tests / 10 files.
+
 ## 2.9.2 — 2026-11-10
 
 - **兜底识别文本形式的斜杠命令**：实测 Paseo 0.15.3 的 bridge 不会把 `/compact` 转成 `command` 输入，仍按普通文本走 `session.prompt`（这正是"在 Paseo 里输入 /compact 不生效"的原因）。provider 现在按 DSH `commands/list` 的目录识别：命中就走 `commands/execute`，不在目录里的 `/xxx`（如 `/usr/bin/env`）仍按文本发。

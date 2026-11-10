@@ -73,11 +73,20 @@ export async function startMockDsh(onPrompt, opts = {}) {
       if (method === 'commands/execute' && String(args.line || '').startsWith('/compact')) {
         pressure = Math.floor(pressure / 2);
       }
-      const value = method === 'session/projections' ? {
-        kind: 'sequenced',
-        asOfSeq: 1,
-        values: { contextPressure: { pressureTokens: pressure, contextWindow: opts.contextWindow ?? 10000 } },
-      }
+      const value = method === 'session/projections' ? (() => {
+        const sid = args?.request?.sessionId ?? args?.sessionId;
+        const item = sessions.find((x) => x.sessionId === sid);
+        return {
+          kind: 'sequenced',
+          asOfSeq: 1,
+          values: {
+            ...(item?.projections?.values || {}),
+            // 会话自带 contextPressure 时以它为准（测试固定值），否则用可变的合成值
+            contextPressure: item?.projections?.values?.contextPressure
+              || { pressureTokens: pressure, contextWindow: opts.contextWindow ?? 10000 },
+          },
+        };
+      })()
         : method === 'commands/list' ? (opts.commands || [
         { definitionId: '@deepseek-ai/dsh-command-compact', name: 'compact', description: 'Compact older conversation history' },
         { definitionId: '@deepseek-ai/dsh-command-goal', name: 'goal', description: 'Set or view the goal', input: { hint: '[<objective>|clear]' } },

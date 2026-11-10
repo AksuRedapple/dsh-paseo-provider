@@ -144,3 +144,44 @@ test('observer: 自有回合期间连接保留（不 stop/start）', async (t) =
 
   await conn.send({ type: 'session.close', requestId: 'r9', sessionId: 'p1' });
 });
+
+// ---------- 2026-11-10：外部斜杠命令也镜像 ----------
+//
+// DSH 桌面版里跑 /compact，Paseo 之前完全看不到；现在 command/run + command/done
+// 会分别变成一条「用户命令」和一条「命令回执」。
+
+test('observer: 外部执行的斜杠命令镜像成时间线', async (t) => {
+  const mock = await startMockDsh(() => {}, { sessions: [{ sessionId: 'mock-session' }] });
+  process.env.DSH_BASE = `http://127.0.0.1:${mock.port}`;
+  process.env.DSH_MUX = `ws://127.0.0.1:${mock.port}`;
+  t.after(() => mock.close());
+
+  const { createProvider } = await import('../../server/provider.ts');
+  const conn = await createProvider().connect({});
+  const events = [];
+  conn.onEvent((e) => events.push(e));
+
+  await conn.send({
+    type: 'session.open', requestId: 'r1', sessionId: 'p1',
+    config: { cwd: '/tmp' },
+    persistence: { version: 1, data: { sessionId: 'mock-session' } },
+    history: 'skip',
+  });
+  await waitFor(events, (e) => e.type === 'session.ready');
+  await until(() => mock.connections() >= 1, 5000, 'observer connection');
+
+  const now = Date.now();
+  await until(() => mock.send({ type: 'event', event: { type: 'command/run', seq: 40, time: now,
+    data: { commandId: 'cmd-x', name: 'compact', args: '', source: { kind: 'user' } } } }), 5000, 'command/run');
+  await until(() => mock.send({ type: 'event', event: { type: 'command/done', seq: 41, time: now,
+    data: { commandId: 'cmd-x', kind: 'success', text: 'Compacted 3 items.' } } }), 5000, 'command/done');
+
+  const done = await waitFor(events, (e) => e.type === 'timeline.item' && e.item.id === 'cmd-done-cmd-x');
+  assert.equal(done.item.text, 'Compacted 3 items.');
+  const run = events.find((e) => e.type === 'timeline.item' && e.item.id === 'cmd-run-cmd-x');
+  assert.ok(run, 'command/run 也要进时间线');
+  assert.equal(run.item.type, 'user_message');
+  assert.equal(run.item.text, '/compact');
+
+  await conn.send({ type: 'session.close', requestId: 'r9', sessionId: 'p1' });
+});

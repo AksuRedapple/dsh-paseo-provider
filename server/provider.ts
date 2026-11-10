@@ -121,6 +121,9 @@ export function createProvider() {
       const runCommand = async (sid: string, dshId: string, line: string, clientMessageId: string) => {
         const name = line.replace(/^\//, '').split(/\s+/)[0];
         logInfo('command', { session: sid, dsh: dshId, name, argsChars: Math.max(0, line.length - name.length - 1) });
+        // 镜像会同时收到 command/run + command/done：先暂停，回执由下面统一发，避免重复两条
+        const observerEntry = observerState.observers.get(sid);
+        observerEntry?.setPaused(true);
         try {
           const r = await executeCommand(dshId, line);
           const text = r.result?.text || '';
@@ -157,6 +160,8 @@ export function createProvider() {
             clientMessageId,
             result: { type: 'failed', error: { message: `命令 /${name} 失败：${msg}`, code: 'dsh/command' } },
           });
+        } finally {
+          observerEntry?.setPaused(false);
         }
       };
 
@@ -230,7 +235,7 @@ export function createProvider() {
                 openSessions.set(sid, dshId);
 
                 // 标题：已有会话用 DSH 的标题；新会话把 Paseo 的 config.title 回写到 DSH。
-                const info = await sessionInfo(dshId);
+                const info = await sessionInfo(dshId, { withRunning: true });
                 logInfo('session.open', { session: sid, dsh: dshId, history: input.history, running: info.running });
                 const desiredTitle = str(input.config?.title);
                 let dshTitle = info.title;
@@ -523,7 +528,7 @@ export function createProvider() {
                 }
                 // DSH 里可能已经有别的客户端在跑（例如桌面版/另一个 Paseo 连接）。
                 // 默认 steer 插进当前轮次；DSH_RUNNING_MODE=fail 可改回快速失败。
-                const info = await sessionInfo(dshId).catch(() => null);
+                const info = await sessionInfo(dshId, { withRunning: true }).catch(() => null);
                 const externalRunning = info?.running === true;
                 const runningMode = (process.env.DSH_RUNNING_MODE || 'steer').toLowerCase();
                 if (externalRunning && runningMode === 'fail') {
@@ -942,17 +947,34 @@ function goalTodoItem(goal: any, roundsStarted?: number) {
   };
 }
 
-async function sessionInfo(dshId: string) {
+/**
+ * 会话状态。默认走单会话 `session/projections`（以前每次都 `session/list` 拉全部会话，
+ * 会话一多就明显变慢）；只有确实需要 `running`（没有镜像连接可参考时）才额外查一次列表。
+ */
+async function sessionInfo(dshId: string, opts: { withRunning?: boolean } = {}) {
   try {
-    const items = await listSessions();
-    const item = items.find((s) => s.sessionId === dshId);
-    const title = item?.projections?.values?.title;
+    if (opts.withRunning) {
+      // running 只存在于 session/list 的条目上：需要它时就直接查列表（保持单次调用）
+      const items = await listSessions().catch(() => [] as any[]);
+      const item = items.find((s) => s.sessionId === dshId);
+      const values = item?.projections?.values;
+      const title = values?.title;
+      return {
+        title: typeof title === 'string' && title.trim() ? title : undefined,
+        running: item?.running === true,
+        usage: contextUsageFromValues(values),
+        goal: goalOfItem(item),
+        todos: todosOfItem(item),
+      };
+    }
+    const values = await sessionProjections(dshId).catch(() => null);
+    const title = values?.title;
     return {
       title: typeof title === 'string' && title.trim() ? title : undefined,
-      running: item?.running === true,
-      usage: contextUsageOf(item),
-      goal: goalOfItem(item),
-      todos: todosOfItem(item),
+      running: false,
+      usage: contextUsageFromValues(values),
+      goal: goalOfItem({ projections: { values } }),
+      todos: todosOfItem({ projections: { values } }),
     };
   } catch {
     return { title: undefined, running: false, usage: null, goal: null, todos: null };
@@ -1229,6 +1251,37 @@ function startObserver(
           flushPending(pending, paseoId, emit);
           void refreshObserverUsage();
         }
+        continue;
+      }
+      if (ev.type === 'command/run') {
+        // DSH 桌面版/其他客户端执行的斜杠命令：镜像成"用户发的命令"，
+        // command/done 再补一条回执，否则 Paseo 侧完全看不到对方跑了 /compact
+        const d: any = ev.data || {};
+        if (!paused) {
+          emit({
+            type: 'timeline.item',
+            sessionId: paseoId,
+            item: {
+              type: 'user_message',
+              id: `cmd-run-${d.commandId || ev.seq}`,
+              text: `/${d.name || '?'}${d.args ? ` ${d.args}` : ''}`,
+            },
+            timestamp: ev.time ? new Date(ev.time).toISOString() : undefined,
+          });
+        }
+        continue;
+      }
+      if (ev.type === 'command/done') {
+        const d: any = ev.data || {};
+        if (!paused && d.text) {
+          emit({
+            type: 'timeline.item',
+            sessionId: paseoId,
+            item: { type: 'assistant_message', id: `cmd-done-${d.commandId || ev.seq}`, text: String(d.text) },
+            timestamp: ev.time ? new Date(ev.time).toISOString() : undefined,
+          });
+        }
+        if (!paused) void refreshObserverUsage();
         continue;
       }
       if (ev.type === 'compaction/end') { if (!paused) void refreshObserverUsage(); continue; }

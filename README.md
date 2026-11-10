@@ -13,7 +13,7 @@
 - **外部回合实时镜像**：会话打开后持续跟随 DSH mux；DSH 桌面版/其他客户端发起的回合会实时出现在 Paseo 时间线（只读）。Paseo 自己发消息时镜像自动让位，steer 时保持跟随。
 - **桌面版原生交互**：图片 prompt（DSH `mediaType`）、运行中 steer 插话（`mode:'steer'`）、`todo/write` → 时间线任务列表。
 - **斜杠命令**：从 DSH `commands/list` 广播命令目录，`/compact`、`/goal`、`/plan`、`/permission` 等走 DSH `commands/execute` 真正执行（不是当文本发给模型）。
-- **实时过程**：thinking（reasoning-delta）边到边发；工具调用一开始就显示 running，结果回来再更新为 completed。
+- **外部命令可见**：DSH 桌面版里执行的斜杠命令（`/compact` 等）会镜像成时间线里的一条命令 + 回执。\n- **实时过程**：thinking（reasoning-delta）边到边发；工具调用一开始就显示 running，结果回来再更新为 completed。
 - **Goal 可见**：DSH 的 `goal/change` 映射为时间线里的任务卡（Paseo 没有独立 goal 卡片，用 todo 项承载）；打开会话时从 projections 恢复当前 goal 和 todos。
 - **上下文与失败可见**：usage 带 token 与上下文窗口占用（回合中每 3s 刷新、压缩与收工即时刷新，走单会话 `session/projections`）；seq 重置、快照截断、未知事件、重连缺口都有 notice，不静默。
 - **历史导入/回放**：列出 DSH 会话、打开并重建时间线；`hasMore` 截断会明确提示。
