@@ -467,3 +467,44 @@ test('lifecycle: 上下文占用随回合与 /compact 更新', async (t) => {
 
   await conn.send({ type: 'session.close', requestId: 'r9', sessionId: 'p1' });
 });
+
+// ---------- 2026-11-10：Paseo 把 /compact 当普通文本发过来时的兜底 ----------
+//
+// 实测 0.15.3 的 bridge 不会把 "/compact" 转成 command 输入（仍走 session.prompt），
+// provider 侧按 DSH 命令目录识别，命中就走 commands/execute；不在目录里的 "/xxx" 仍按文本。
+
+test('lifecycle: 文本形式的 /compact 也能走 commands/execute（目录命中才拦）', async (t) => {
+  const mock = await startMockDsh(() => {});
+  process.env.DSH_BASE = `http://127.0.0.1:${mock.port}`;
+  process.env.DSH_MUX = `ws://127.0.0.1:${mock.port}`;
+  t.after(() => mock.close());
+
+  const { createProvider } = await import('../../server/provider.ts');
+  const conn = await createProvider().connect({});
+  const events = [];
+  conn.onEvent((e) => events.push(e));
+
+  await conn.send({
+    type: 'session.open', requestId: 'r1', sessionId: 'p1',
+    config: { cwd: '/tmp' }, history: 'skip',
+  });
+  await waitFor(events, (e) => e.type === 'session.commands');
+
+  const sendText = (id, text) => conn.send({
+    type: 'session.prompt', sessionId: 'p1',
+    prompt: { clientMessageId: id, delivery: 'auto', input: { type: 'message', content: [{ type: 'text', text }] } },
+  });
+
+  await sendText('t1', '/compact');
+  const done = await waitFor(events, (e) => e.type === 'session.prompt_result' && e.clientMessageId === 't1');
+  assert.equal(done.result.type, 'completed');
+  assert.equal(mock.calls.find((c) => c.method === 'commands/execute')?.args.line, '/compact');
+  assert.ok(!mock.calls.some((c) => c.method === 'session/prompt'), '不应把命令当文本发给模型');
+
+  // 不在 DSH 命令目录里的 "/..." 必须原样当文本发出去（别误伤路径或普通斜杠文本）
+  await sendText('t2', '/usr/bin/env 是什么');
+  await waitFor(events, (e) => e.type === 'session.prompt_result' && e.clientMessageId === 't2');
+  assert.ok(mock.calls.some((c) => c.method === 'session/prompt'), '未知斜杠文本应走普通 prompt');
+
+  await conn.send({ type: 'session.close', requestId: 'r9', sessionId: 'p1' });
+});

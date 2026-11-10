@@ -1,5 +1,11 @@
 # Changelog
 
+## 2.9.2 — 2026-11-10
+
+- **兜底识别文本形式的斜杠命令**：实测 Paseo 0.15.3 的 bridge 不会把 `/compact` 转成 `command` 输入，仍按普通文本走 `session.prompt`（这正是"在 Paseo 里输入 /compact 不生效"的原因）。provider 现在按 DSH `commands/list` 的目录识别：命中就走 `commands/execute`，不在目录里的 `/xxx`（如 `/usr/bin/env`）仍按文本发。
+- 命令执行器抽成 `runCommand`，两条入口（command 输入 / 文本兜底）共用同一套回执、notice 与 usage 刷新。
+- Tests: 62 tests / 10 files.
+
 ## 2.9.1 — 2026-11-10
 
 **上下文面板不再"迟钝 / 偶尔不动"**：

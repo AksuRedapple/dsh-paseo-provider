@@ -101,9 +101,64 @@ export function createProvider() {
       /** 上一轮的收尾 Promise：interrupt 后立刻 prompt 时先等它，避免误判 busy。 */
       const turnSettled = new Map<string, Promise<unknown>>();
       const sessionModels = new Map<string, ModelRef>(); // paseoSessionId → DSH 当前模型
+      /** paseoSessionId → DSH 命令名集合。Paseo 的 bridge 有时不会把 "/xxx" 转成命令输入
+       *  （0.15.3 实测仍按普通文本发过来），所以服务端按这份名单兜底识别。 */
+      const commandNames = new Map<string, Set<string>>();
       // 每个 provider 连接独立：观察者 / 外部正在跑的回合（steer 复用 turnId）
       const observerState: ObserverState = { observers: new Map(), observedTurns: new Map() };
       const emit: Emit = (e) => listeners.forEach((l) => l(e));
+
+      const dshCommandNames = async (sid: string, dshId: string): Promise<Set<string>> => {
+        const cached = commandNames.get(sid);
+        if (cached) return cached;
+        const cmds = await listCommands(dshId).catch(() => [] as any[]);
+        const names = new Set<string>(cmds.map((c: any) => String(c.name)));
+        if (names.size) commandNames.set(sid, names);
+        return names;
+      };
+
+      /** 执行一条 DSH 斜杠命令（两条入口共用：Paseo 的 command 输入 / 文本兜底识别）。 */
+      const runCommand = async (sid: string, dshId: string, line: string, clientMessageId: string) => {
+        const name = line.replace(/^\//, '').split(/\s+/)[0];
+        logInfo('command', { session: sid, dsh: dshId, name, argsChars: Math.max(0, line.length - name.length - 1) });
+        try {
+          const r = await executeCommand(dshId, line);
+          const text = r.result?.text || '';
+          if (text) {
+            emit({
+              type: 'timeline.item',
+              sessionId: sid,
+              item: { type: 'assistant_message', id: `cmd-${r.commandId || Date.now()}`, text },
+            });
+          }
+          emitUsage(emit, sid, await sessionContextUsage(dshId).catch(() => null));
+          emit({
+            type: 'session.prompt_result',
+            sessionId: sid,
+            clientMessageId,
+            result: { type: 'completed' },
+          });
+        } catch (e) {
+          const msg = errorMessage(e);
+          logWarn('command failed', { session: sid, name, error: msg });
+          emit({
+            type: 'session.notice',
+            sessionId: sid,
+            notice: {
+              id: `cmd-err-${Date.now()}`,
+              severity: 'warning',
+              title: 'DSH',
+              description: `命令 /${name} 失败：${msg}`,
+            },
+          });
+          emit({
+            type: 'session.prompt_result',
+            sessionId: sid,
+            clientMessageId,
+            result: { type: 'failed', error: { message: `命令 /${name} 失败：${msg}`, code: 'dsh/command' } },
+          });
+        }
+      };
 
       return {
         // ProviderConnection 契约要求（漏了会被判 invalid message）
@@ -340,7 +395,8 @@ export function createProvider() {
                       ...(c.input?.hint ? { argumentHint: c.input.hint } : {}),
                     })),
                   });
-                  logDebug('session.commands', { session: sid, count: cmds.length });
+                  commandNames.set(sid, new Set(cmds.map((c) => String(c.name))));
+                  logInfo('session.commands', { session: sid, count: cmds.length });
                 }
 
                 emit({ type: 'session.ready', sessionId: sid, requestId: input.requestId });
@@ -361,49 +417,11 @@ export function createProvider() {
                 const dshId = openSessions.get(input.sessionId) || input.sessionId;
                 const clientMessageId = p.clientMessageId ?? '';
 
-                // 斜杠命令：走 DSH 的 commands/execute，而不是当普通文本发给模型
+                // 斜杠命令输入：走 DSH 的 commands/execute
                 if (p.input?.type === 'command') {
                   const name = String(p.input.name || '').replace(/^\//, '');
                   const args = String(p.input.arguments ?? '');
-                  const line = `/${name}${args ? ` ${args}` : ''}`;
-                  logInfo('command', { session: input.sessionId, dsh: dshId, name, argsChars: args.length });
-                  try {
-                    const r = await executeCommand(dshId, line);
-                    const text = r.result?.text || '';
-                    if (text) {
-                      emit({
-                        type: 'timeline.item',
-                        sessionId: input.sessionId,
-                        item: { type: 'assistant_message', id: `cmd-${r.commandId || Date.now()}`, text },
-                      });
-                    }
-                    emitUsage(emit, input.sessionId, await sessionContextUsage(dshId).catch(() => null));
-                    emit({
-                      type: 'session.prompt_result',
-                      sessionId: input.sessionId,
-                      clientMessageId,
-                      result: { type: 'completed' },
-                    });
-                  } catch (e) {
-                    const msg = errorMessage(e);
-                    logWarn('command failed', { session: input.sessionId, name, error: msg });
-                    emit({
-                      type: 'session.notice',
-                      sessionId: input.sessionId,
-                      notice: {
-                        id: `cmd-err-${Date.now()}`,
-                        severity: 'warning',
-                        title: 'DSH',
-                        description: `命令 /${name} 失败：${msg}`,
-                      },
-                    });
-                    emit({
-                      type: 'session.prompt_result',
-                      sessionId: input.sessionId,
-                      clientMessageId,
-                      result: { type: 'failed', error: { message: `命令 /${name} 失败：${msg}`, code: 'dsh/command' } },
-                    });
-                  }
+                  await runCommand(input.sessionId, dshId, `/${name}${args ? ` ${args}` : ''}`, clientMessageId);
                   break;
                 }
 
@@ -469,6 +487,18 @@ export function createProvider() {
                     });
                   }
                   break;
+                }
+                // 兜底：Paseo 的 bridge 没把 "/compact" 转成 command 时会走到这里。
+                // 只对 DSH 命令目录里存在的名字生效，避免误伤以 "/" 开头的正常文本。
+                if (p.delivery !== 'steer') {
+                  const slash = /^\/([a-z][a-z0-9-]*)(?:\s+[\s\S]*)?$/.exec(text);
+                  if (slash) {
+                    const names = await dshCommandNames(input.sessionId, dshId);
+                    if (names.has(slash[1])) {
+                      await runCommand(input.sessionId, dshId, text, clientMessageId);
+                      break;
+                    }
+                  }
                 }
                 if (activeTurns.has(input.sessionId)) {
                   // 中断后立刻发消息：上一轮的 abort → 收尾是异步的，finally 还没跑完。
@@ -763,6 +793,7 @@ export function createProvider() {
                 openSessions.delete(input.sessionId);
                 sessionModels.delete(input.sessionId);
                 lastUsageBySession.delete(input.sessionId);
+                commandNames.delete(input.sessionId);
                 emit({ type: 'session.closed', sessionId: input.sessionId });
                 logInfo('session.closed', { session: input.sessionId });
                 break;
