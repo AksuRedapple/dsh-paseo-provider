@@ -1,5 +1,10 @@
 # Changelog
 
+## 2.10.2 — 2026-11-10
+
+- Docs only (registry review feedback): OVERVIEW now names the actual Windows/Linux log locations and the `DSH_WEB_LOG` override instead of macOS only; "slash commands are not supported" was stale and is corrected (they run through `commands/execute` since v2.9.0, and desktop-side commands are mirrored since v2.10.0).
+- Tests: 64 tests / 10 files.
+
 ## 2.10.1 — 2026-11-10
 
 - **不再吃掉正文里的代码**：prompt 清洗以前用通用 `<[^>]+>` 剥 Paseo 的包装标签，`Array<string>` 会变成 `Array`、`<div class="x">` 整段消失。现在只剥 `<paseo-…>` / `<paseo_…>` 这类自家标签；标题补全里的同类清洗一并修正。对 fork 出来的 chat history（通篇代码）影响最大。
