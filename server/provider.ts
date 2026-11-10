@@ -7,7 +7,7 @@
  *  · send() 只报"收到"，结果一律走 onEvent 推**完整快照**
  *  · ProviderSessionSummary = { persistence:{version,data}, cwd, title?, description?, updatedAt?(ISO) }
  */
-import { listSessions, promptSession, createSession, interruptSession, probeDsh, modelCatalog, selectModel, renameSession, listCommands, executeCommand } from './dsh-client';
+import { listSessions, promptSession, createSession, interruptSession, probeDsh, modelCatalog, selectModel, renameSession, listCommands, executeCommand, sessionProjections } from './dsh-client';
 import type { DshModelCatalog, DshPromptBlock } from './dsh-client';
 import { fetchSessionRecords, fetchSessionSnapshot, followSession, type DshEvent } from './dsh-ws';
 import { getDshEndpoint } from './dsh-endpoint.mjs';
@@ -54,6 +54,16 @@ async function loadCatalog(maxAgeMs = 60_000): Promise<DshModelCatalog> {
 /** 不支持图片输入的模型（`provider::model`）。DSH 的 modelCatalog 没有能力位，
  *  只能从 `session/attachment-invalid` 反向学习；学到之后同类请求直接快速失败，
  *  不用再让整轮跑到 DSH 才报错（2026-11-08 真机一例）。 */
+/** Paseo 的 session.usage 是「整块替换 lastUsage」：tokens（step chunk）与上下文占用（projections）
+ *  必须合并成同一份发出去，否则后发的一方会把先发的字段清掉（面板忽有忽无就是这么来的）。 */
+const lastUsageBySession = new Map<string, Record<string, any>>();
+function emitUsage(emit: Emit, sessionId: string, patch: Record<string, any> | null | undefined) {
+  if (!patch || !Object.keys(patch).length) return;
+  const next = { ...(lastUsageBySession.get(sessionId) || {}), ...patch };
+  lastUsageBySession.set(sessionId, next);
+  emit({ type: 'session.usage', sessionId, usage: next });
+}
+
 const imageUnsupported = new Set<string>();
 const ATTACHMENT_REJECTED = /attachment-invalid|does not support image/i;
 
@@ -251,7 +261,7 @@ export function createProvider() {
                 if (cat) {
                   emit({ type: 'session.config', sessionId: sid, config: toProviderConfig(cat, model) });
                 }
-                if (info.usage) emit({ type: 'session.usage', sessionId: sid, usage: info.usage });
+                if (info.usage) emitUsage(emit, sid, info.usage);
                 const emitGoal = () => {
                   if (!info.goal) return false;
                   const item = goalTodoItem(info.goal.goal, info.goal.roundsStarted);
@@ -367,6 +377,7 @@ export function createProvider() {
                         item: { type: 'assistant_message', id: `cmd-${r.commandId || Date.now()}`, text },
                       });
                     }
+                    emitUsage(emit, input.sessionId, await sessionContextUsage(dshId).catch(() => null));
                     emit({
                       type: 'session.prompt_result',
                       sessionId: input.sessionId,
@@ -580,15 +591,6 @@ export function createProvider() {
                           : reason === 'completed' ? 'completed' : 'failed',
                       });
                     }
-                    // 一轮结束后 projections 已更新：把上下文占用补进 usage（Paseo 用它画占用环）
-                    const ctx = await sessionContextUsage(dshId).catch(() => null);
-                    if (ctx) {
-                      logDebug('context usage', {
-                        used: ctx.contextWindowUsedTokens ?? '?',
-                        max: ctx.contextWindowMaxTokens ?? '?',
-                      });
-                      emit({ type: 'session.usage', sessionId: input.sessionId, usage: ctx });
-                    }
                     emit({
                       type: 'session.prompt_result',
                       sessionId: input.sessionId,
@@ -760,6 +762,7 @@ export function createProvider() {
                 observerState.observedTurns.delete(input.sessionId);
                 openSessions.delete(input.sessionId);
                 sessionModels.delete(input.sessionId);
+                lastUsageBySession.delete(input.sessionId);
                 emit({ type: 'session.closed', sessionId: input.sessionId });
                 logInfo('session.closed', { session: input.sessionId });
                 break;
@@ -836,8 +839,8 @@ async function resolveSessionModel(dshId: string): Promise<ModelRef | null> {
 }
 
 /** 从 session/list 的 projections.contextPressure 读上下文窗口与已用 token。 */
-function contextUsageOf(item: any) {
-  const p = item?.projections?.values?.contextPressure;
+function contextUsageFromValues(values: any) {
+  const p = values?.contextPressure;
   const used = typeof p?.pressureTokens === 'number' && Number.isFinite(p.pressureTokens) ? p.pressureTokens : undefined;
   const max = typeof p?.contextWindow === 'number' && Number.isFinite(p.contextWindow) && p.contextWindow > 0
     ? p.contextWindow
@@ -849,7 +852,17 @@ function contextUsageOf(item: any) {
   };
 }
 
+function contextUsageOf(item: any) {
+  return contextUsageFromValues(item?.projections?.values);
+}
+
+/** 单会话取占用：优先 `session/projections`（只查一个会话），失败再退回 `session/list`。 */
 async function sessionContextUsage(dshId: string) {
+  try {
+    const values = await sessionProjections(dshId);
+    const usage = contextUsageFromValues(values);
+    if (usage) return usage;
+  } catch {}
   try {
     const items = await listSessions();
     return contextUsageOf(items.find((s) => s.sessionId === dshId));
@@ -1136,6 +1149,10 @@ function startObserver(
     if (closed) { try { follow.close(); } catch {} return; }
 
     const preview = createPreviewStreamer(paseoId, emit);
+  // 外部回合（DSH 桌面版发起）结束后也刷新上下文占用，否则面板只在 Paseo 自己发消息时才动
+  const refreshObserverUsage = async () => {
+    emitUsage(emit, paseoId, await sessionContextUsage(dshId).catch(() => null));
+  };
     const pending = new Map<string, any>();
     let active: { n: number; id: string } | null = initialTurn ?? null;
     try {
@@ -1177,9 +1194,13 @@ function startObserver(
         if (active && !paused) emit({ type: 'session.turn', sessionId: paseoId, turnId: active.id, state: turnState });
         active = null;
         state.observedTurns.delete(paseoId);
-        if (!paused) flushPending(pending, paseoId, emit);
+        if (!paused) {
+          flushPending(pending, paseoId, emit);
+          void refreshObserverUsage();
+        }
         continue;
       }
+      if (ev.type === 'compaction/end') { if (!paused) void refreshObserverUsage(); continue; }
       // 自有回合进行中：连接保留（游标照常前进，恢复后不会回放），输出交给 runTurn
       if (paused) continue;
       const key = `${(ev.data as any)?.turn}:${(ev.data as any)?.step}`;
@@ -1252,8 +1273,7 @@ function createPreviewStreamer(paseoId: string, emit: Emit) {
     if (!f) return;
     // usage chunk 可能不带 turn/step，先处理再进 step 守卫
     if (f.type === 'chunk' && f.chunk?.type === 'usage') {
-      const usage = usageFromChunk(f.chunk);
-      if (usage) emit({ type: 'session.usage', sessionId: paseoId, usage });
+      emitUsage(emit, paseoId, usageFromChunk(f.chunk));
       return;
     }
     // chunk 帧本身不带 turn/step，只有 start 帧带；key 必须沿用 start 的值，
@@ -1364,6 +1384,25 @@ export async function runTurn(
   };
   deps.signal?.addEventListener('abort', onAbort, { once: true });
 
+  // 上下文占用刷新：面板只吃 session.usage 事件，所以「回合结束才发」会显得很迟钝。
+  // 这里按 3s 节流拉一次单会话 projections；值没变就不发。
+  let lastUsageJson = '';
+  let usageInFlight = false;
+  const refreshUsage = async (opts: { force?: boolean } = {}) => {
+    if (usageInFlight) return;
+    usageInFlight = true;
+    try {
+      const ctx = await sessionContextUsage(dshId).catch(() => null);
+      if (!ctx) return;
+      const key = JSON.stringify(ctx);
+      if (!opts.force && key === lastUsageJson) return;
+      lastUsageJson = key;
+      emitUsage(emit, paseoId, ctx);
+    } finally {
+      usageInFlight = false;
+    }
+  };
+
   const notice = (message: string, severity: 'info' | 'warning' | 'error' = 'warning') => {
     emit({
       type: 'session.notice',
@@ -1433,7 +1472,9 @@ export async function runTurn(
     handle(turnState.onSnapshot(snap));
     await (deps.prompt || promptSession)(dshId, deps.content ?? text, deps.mode ?? 'queue');
     deps.onStarted?.();
+    void refreshUsage({ force: true });
 
+    let lastUsageAt = now();
     timer = setInterval(() => {
       const at = now();
       for (const [callId, p] of [...pending]) {
@@ -1445,11 +1486,17 @@ export async function runTurn(
         }
       }
       handle(turnState.onTick(at, { busy: pending.size > 0 }));
+      if (at - lastUsageAt >= 3_000) { lastUsageAt = at; void refreshUsage(); }
       if (turnState.phase === 'done') { try { follow.close(); } catch {} }
     }, deps.tickMs ?? 1000);
 
     for await (const msg of follow) {
-      if (msg.kind === 'event') handle(turnState.onEvent(msg.event));
+      if (msg.kind === 'event') {
+        const evType = (msg.event as any)?.type;
+        if (evType === 'compaction/start') notice('正在压缩上下文…', 'info');
+        else if (evType === 'compaction/end') { notice('上下文已压缩'); void refreshUsage({ force: true }); }
+        handle(turnState.onEvent(msg.event));
+      }
       else if (msg.kind === 'assistant') {
         preview.frame(msg.frame);
         handle(turnState.onAssistantFrame(msg.frame));
@@ -1497,6 +1544,8 @@ export async function runTurn(
     preview.flush();
     try { follow.close(); } catch {}
     flushPending(pending, paseoId, emit);
+    // abort / 抛错路径也必须更新占用（以前只在成功分支发，面板会一直停在旧值）
+    await refreshUsage({ force: true }).catch(() => {});
     const level = reason === 'completed' && !interrupted ? 'info' : 'warn';
     const fields = {
       session: paseoId,

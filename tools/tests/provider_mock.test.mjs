@@ -61,10 +61,12 @@ test('provider-mock: WS prompt emits tool, text, usage, completion', async (t) =
   assert.ok(tool, 'completed tool card expected');
   assert.equal(tool.status, 'completed');
 
-  const usage = events.find((e) => e.type === 'session.usage');
+  // 上下文字段与 step tokens 是合并进同一份 lastUsage 的（后发不会清掉先发），取最后一条
+  const usage = events.filter((e) => e.type === 'session.usage').at(-1);
   assert.ok(usage, 'session.usage expected');
   assert.equal(usage.usage.inputTokens, 3);
   assert.equal(usage.usage.outputTokens, 2);
+  assert.ok(usage.usage.contextWindowMaxTokens, '上下文占用必须与 tokens 共存于同一条 usage');
 
   const turn = events.find((e) => e.type === 'session.turn' && e.state === 'completed');
   assert.ok(turn, 'session.turn completed expected');

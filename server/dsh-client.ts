@@ -143,6 +143,13 @@ export async function probeDsh(timeoutMs = 1500): Promise<{ ok: boolean; diagnos
   }
 }
 
+/** 单会话 projections（比 session/list 便宜：只取一个会话的状态）。
+ *  实测：`{request:{sessionId}}`；返回 `{kind:'sequenced', asOfSeq, values:{...}}`。 */
+export async function sessionProjections(sessionId: string): Promise<Record<string, any> | null> {
+  const v = await rpc<{ values?: Record<string, any> }>('session/projections', { request: { sessionId } }, 'none');
+  return v?.values || null;
+}
+
 export interface DshCommand {
   definitionId: string;
   name: string;

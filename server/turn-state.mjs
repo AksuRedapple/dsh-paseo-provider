@@ -19,6 +19,9 @@ export const IGNORED_EVENTS = new Set([
   'system/message', 'developer/message', 'workspace/changes',
   'permission/preset', 'sandbox/mode', 'approval/policy',
   'session/end-seed',
+  // 2026-11-10：DSH 的真实事件流里还有压缩与命令
+  'compaction/start', 'compaction/summary', 'compaction/end',
+  'command/run', 'command/done',
 ]);
 
 /** 事件分类：timeline / turn / ignore / unknown */

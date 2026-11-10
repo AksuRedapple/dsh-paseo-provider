@@ -30,6 +30,7 @@ export async function startMockDsh(onPrompt, opts = {}) {
   let currentWs = null;
   let streamId = '';
   const sessions = opts.sessions || [];
+  let pressure = opts.pressureTokens ?? 1000;
   const records = opts.records || [];
   const calls = [];
   let requiredCookie = opts.requireCookie;
@@ -69,7 +70,15 @@ export async function startMockDsh(onPrompt, opts = {}) {
         res.end(JSON.stringify({ result: { ok: false, error: failWith } }));
         return;
       }
-      const value = method === 'commands/list' ? (opts.commands || [
+      if (method === 'commands/execute' && String(args.line || '').startsWith('/compact')) {
+        pressure = Math.floor(pressure / 2);
+      }
+      const value = method === 'session/projections' ? {
+        kind: 'sequenced',
+        asOfSeq: 1,
+        values: { contextPressure: { pressureTokens: pressure, contextWindow: opts.contextWindow ?? 10000 } },
+      }
+        : method === 'commands/list' ? (opts.commands || [
         { definitionId: '@deepseek-ai/dsh-command-compact', name: 'compact', description: 'Compact older conversation history' },
         { definitionId: '@deepseek-ai/dsh-command-goal', name: 'goal', description: 'Set or view the goal', input: { hint: '[<objective>|clear]' } },
       ])

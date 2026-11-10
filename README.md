@@ -15,7 +15,7 @@
 - **斜杠命令**：从 DSH `commands/list` 广播命令目录，`/compact`、`/goal`、`/plan`、`/permission` 等走 DSH `commands/execute` 真正执行（不是当文本发给模型）。
 - **实时过程**：thinking（reasoning-delta）边到边发；工具调用一开始就显示 running，结果回来再更新为 completed。
 - **Goal 可见**：DSH 的 `goal/change` 映射为时间线里的任务卡（Paseo 没有独立 goal 卡片，用 todo 项承载）；打开会话时从 projections 恢复当前 goal 和 todos。
-- **上下文与失败可见**：usage 带 token 与上下文窗口占用；seq 重置、快照截断、未知事件、重连缺口都有 notice，不静默。
+- **上下文与失败可见**：usage 带 token 与上下文窗口占用（回合中每 3s 刷新、压缩与收工即时刷新，走单会话 `session/projections`）；seq 重置、快照截断、未知事件、重连缺口都有 notice，不静默。
 - **历史导入/回放**：列出 DSH 会话、打开并重建时间线；`hasMore` 截断会明确提示。
 - **标题同步**：打开已有会话时使用 DSH 标题；新会话把 Paseo 的 `title` 回写到 DSH（`session/rename`）。
 

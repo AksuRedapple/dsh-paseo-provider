@@ -408,3 +408,62 @@ test('lifecycle: 斜杠命令走 commands/execute 而不是普通 prompt', async
 
   await conn.send({ type: 'session.close', requestId: 'r9', sessionId: 'p1' });
 });
+
+// ---------- 2026-11-10：上下文占用要跟着回合/压缩走 ----------
+//
+// 以前只在「回合成功结束」发一次 session.usage：面板看着延迟，abort/失败时干脆不动；
+// 现在回合开始、每 3s（值变化时）、收工、命令执行后都会刷新，压缩事件还会给可见反馈。
+
+test('lifecycle: 上下文占用随回合与 /compact 更新', async (t) => {
+  const mock = await startMockDsh((ws, streamId) => {
+    const send = (value) => ws.send(JSON.stringify({ type: 'item', streamId, value }));
+    const now = Date.now();
+    send({ type: 'event', event: { type: 'user/message', seq: 1, time: now,
+      data: { content: [{ type: 'text', text: 'hi' }], source: { kind: 'user' } } } });
+    send({ type: 'event', event: { type: 'turn/start', seq: 2, time: now, data: { turn: 1 } } });
+    send({ type: 'event', event: { type: 'assistant/message', seq: 3, time: now,
+      data: { turn: 1, step: 1, message: { content: [{ type: 'text', text: 'ok' }] } } } });
+    send({ type: 'event', event: { type: 'turn/end', seq: 4, time: now,
+      data: { turn: 1, reason: { kind: 'completed' } } } });
+  }, { pressureTokens: 1000, contextWindow: 10000 });
+  process.env.DSH_BASE = `http://127.0.0.1:${mock.port}`;
+  process.env.DSH_MUX = `ws://127.0.0.1:${mock.port}`;
+  t.after(() => mock.close());
+
+  const { createProvider } = await import('../../server/provider.ts');
+  const conn = await createProvider().connect({});
+  const events = [];
+  conn.onEvent((e) => events.push(e));
+
+  await conn.send({
+    type: 'session.open', requestId: 'r1', sessionId: 'p1',
+    config: { cwd: '/tmp' }, history: 'skip',
+  });
+  await waitFor(events, (e) => e.type === 'session.ready');
+
+  await conn.send({
+    type: 'session.prompt', sessionId: 'p1',
+    prompt: { clientMessageId: 'm1', delivery: 'auto',
+      input: { type: 'message', content: [{ type: 'text', text: 'hi' }] } },
+  });
+  await waitFor(events, (e) => e.type === 'session.prompt_result' && e.clientMessageId === 'm1');
+
+  const first = events.filter((e) => e.type === 'session.usage').at(-1);
+  assert.ok(first, '回合期间必须发出 session.usage');
+  assert.equal(first.usage.contextWindowUsedTokens, 1000);
+  assert.equal(first.usage.contextWindowMaxTokens, 10000);
+
+  await conn.send({
+    type: 'session.prompt', sessionId: 'p1',
+    prompt: { clientMessageId: 'm2', delivery: 'auto',
+      input: { type: 'command', name: 'compact', arguments: '' } },
+  });
+  await waitFor(events, (e) => e.type === 'session.prompt_result' && e.clientMessageId === 'm2');
+
+  const after = events.filter((e) => e.type === 'session.usage').at(-1);
+  assert.equal(after.usage.contextWindowUsedTokens, 500, '/compact 之后占用要立刻掉一半');
+  assert.equal(mock.calls.filter((c) => c.method === 'session/projections').length >= 2, true,
+    '应通过单会话 projections 取值，而不是每次 listSessions');
+
+  await conn.send({ type: 'session.close', requestId: 'r9', sessionId: 'p1' });
+});
