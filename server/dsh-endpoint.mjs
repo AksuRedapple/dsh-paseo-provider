@@ -7,6 +7,57 @@ const LEGACY_BASE = 'http://127.0.0.1:8781';
 const LEGACY_MUX = 'ws://127.0.0.1:8781/api/remote.mux';
 const TOKEN_RE = /dsh web:\s*(http:\/\/[^?\s]+)\?token=([^\s]+)/g;
 
+/**
+ * last-good cookie 落盘位置（0600）。
+ * 背景（2026-11-20）：DSH 桌面端从 Dock / `open -a` 启动时 stdout 不接日志，
+ * 新 launch token 不落 dsh-web.log，日志里那条是旧的 → 交换 401 → 插件失联。
+ * 但 dsh-auth cookie 已实测跨 DSH 重启稳定（见 ~/.cache/dsh-fastlane.json 的
+ * 11-16 cookie 在 11-20 仍 200），所以换不到 cookie 时可以回落到上次成功的那枚，
+ * 用一次 GET / 探活确认它还有效再用。
+ */
+const DEFAULT_COOKIE_CACHE = path.join(os.homedir(), '.cache', 'dsh-provider-cookie.json');
+
+function cookieCachePath(env) {
+  // env 显式传入时优先它；否则回落到进程环境（测试/嵌入式调用会传空 env）
+  return env?.DSH_COOKIE_CACHE || process.env.DSH_COOKIE_CACHE || DEFAULT_COOKIE_CACHE;
+}
+
+/** 读 last-good cookie；结构不对就当没有。 */
+function readCookieCache(file) {
+  try {
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (raw && typeof raw.cookie === 'string' && raw.cookie.startsWith('dsh-auth-')) {
+      return { cookie: raw.cookie, base: typeof raw.base === 'string' ? raw.base : undefined, at: raw.at };
+    }
+  } catch {}
+  return null;
+}
+
+/** 写 last-good cookie；失败不影响主流程。 */
+function writeCookieCache(file, cookie, base) {
+  try {
+    fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+    fs.writeFileSync(file, JSON.stringify({ cookie, base, at: Date.now() }), { mode: 0o600 });
+    fs.chmodSync(file, 0o600);
+  } catch {}
+}
+
+/** 用 cookie 探一次 GET /：2xx/3xx 视为有效（DSH 无效 cookie 回 401）。 */
+async function probeCookie({ base, cookie, fetchImpl = fetch, timeoutMs = 3000 }) {
+  try {
+    const res = await fetchImpl(`${base}/`, {
+      headers: { cookie },
+      redirect: 'manual',
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    return res.status >= 200 && res.status < 400;
+  } catch {
+    return false;
+  }
+}
+
+const muxFor = (port) => `ws://127.0.0.1:${port}/api/remote.mux`;
+
 /** 解析 DSH web 日志里的最后一个 launch token 与端口；没有则返回 null。 */
 export function parseWebLog(text) {
   let last;
@@ -86,7 +137,8 @@ export async function exchangeToken({ base, token, fetchImpl = fetch, timeoutMs 
 
 /**
  * 解析当前可用的 DSH 端点。
- * 优先级：DSH_BASE/DSH_MUX 显式覆盖 → 日志 token + cookie 交换 → 旧的 8781 兜底。
+ * 优先级：DSH_BASE/DSH_MUX 显式覆盖 → 日志 token + cookie 交换
+ *   → last-good cookie（探活通过才用）→ 旧的 8781 兜底。
  */
 export async function resolveDshEndpoint(opts = {}) {
   const env = opts.env || process.env;
@@ -99,6 +151,7 @@ export async function resolveDshEndpoint(opts = {}) {
     };
   }
 
+  const cacheFile = opts.cookieCachePath || cookieCachePath(env);
   const candidates = opts.logPaths
     || (opts.logPath
       ? [opts.logPath]
@@ -112,22 +165,47 @@ export async function resolveDshEndpoint(opts = {}) {
     } catch {}
   }
   if (!parsed) {
+    // 日志里没有 token（典型：DSH 从 Dock/open -a 启动）→ 先试 last-good cookie
+    const cached = readCookieCache(cacheFile);
+    if (cached) {
+      const base = cached.base || `http://127.0.0.1:${DEFAULT_PORT}`;
+      const port = Number(base.split(':').pop()) || DEFAULT_PORT;
+      if (await probeCookie({ base, cookie: cached.cookie, fetchImpl: opts.fetchImpl, timeoutMs: opts.exchangeTimeoutMs })) {
+        console.error('[dsh] no launch token; using last-good cookie');
+        return { base, mux: muxFor(port), cookie: cached.cookie, source: 'cookie-cache' };
+      }
+    }
     console.error(`[dsh] no launch token in ${candidates.length} candidate log(s); set DSH_WEB_LOG to override (tried: ${candidates.join(', ')})`);
     return { base: LEGACY_BASE, mux: LEGACY_MUX, cookie: env.DSH_COOKIE, source: 'legacy-fallback' };
   }
 
   const base = `http://127.0.0.1:${parsed.port}`;
   let cookie = env.DSH_COOKIE;
+  let source = env.DSH_COOKIE ? 'env-cookie' : 'discovered';
+  let minted = false;
   if (!cookie) {
     try {
       cookie = await exchangeToken({ base, token: parsed.token, fetchImpl: opts.fetchImpl, timeoutMs: opts.exchangeTimeoutMs });
+      minted = Boolean(cookie);
     } catch {}
+  }
+  if (minted) {
+    // token 新鲜可用 → 落盘作为下次的 last-good
+    writeCookieCache(cacheFile, cookie, base);
+  } else if (!cookie) {
+    // 日志 token 已失效（被轮换/已消费）→ 回落 last-good cookie，探活后才算数
+    const cached = readCookieCache(cacheFile);
+    if (cached && await probeCookie({ base, cookie: cached.cookie, fetchImpl: opts.fetchImpl, timeoutMs: opts.exchangeTimeoutMs })) {
+      console.error('[dsh] token exchange failed; using last-good cookie');
+      cookie = cached.cookie;
+      source = 'cookie-cache';
+    }
   }
   return {
     base,
-    mux: `ws://127.0.0.1:${parsed.port}/api/remote.mux`,
+    mux: muxFor(parsed.port),
     cookie,
-    source: cookie ? 'discovered' : 'discovered-no-cookie',
+    source: cookie ? source : 'discovered-no-cookie',
     logPath,
   };
 }

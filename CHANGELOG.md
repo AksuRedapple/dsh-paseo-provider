@@ -1,5 +1,15 @@
 # Changelog
 
+## 2.11.0 — 2026-11-20
+
+**launch token 换不到 cookie 时回落 last-good cookie**（修「Paseo 模型列表显示不可用」的真实事故）：
+
+- 现象：DSH 从 Dock / `open -a` 启动时 stdout 不接日志 → 新 launch token 不写进 `dsh-web.log`，日志里那条已轮换 → 交换 401 → 插件拿不到 `dsh-auth-*` cookie → provider 显示 Unavailable。
+- 改法：每次成功换到 cookie 就落盘到 `~/.cache/dsh-provider-cookie.json`（0600，路径可用 `DSH_COOKIE_CACHE` 覆盖）；之后交换失败（或日志里干脆没有 token）时读回这枚 cookie，先 `GET /` 探活（2xx/3xx 才算），有效才用。实测 DSH cookie 跨重启稳定（11-16 的 cookie 在 11-20 仍 200）。
+- 新增端点来源 `cookie-cache`；只暴露来源与地址，不打印 cookie。
+- 鉴权彻底失败时的报错文案同步更新：现在表示「token 失效且 last-good 也不可用」。
+- Tests: 69 tests / 10 files（endpoint 新增 9–13：回落、探活失败、无 token、legacy 兜底、落盘 0600）。
+
 ## 2.10.2 — 2026-11-10
 
 - Docs only (registry review feedback): OVERVIEW now names the actual Windows/Linux log locations and the `DSH_WEB_LOG` override instead of macOS only; "slash commands are not supported" was stale and is corrected (they run through `commands/execute` since v2.9.0, and desktop-side commands are mirrored since v2.10.0).

@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { registerHooks } from 'node:module';
 import { extname } from 'node:path';
-import { writeFileSync, mkdtempSync } from 'node:fs';
+import { writeFileSync, readFileSync, statSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -13,6 +13,10 @@ import {
   clearDshEndpointCache,
 } from '../../server/dsh-endpoint.mjs';
 import { startMockDsh, sendMockTurn } from './mock-dsh.mjs';
+
+// last-good cookie 缓存落在临时目录，别写脏 ~/.cache
+process.env.DSH_COOKIE_CACHE = join(mkdtempSync(join(tmpdir(), 'dsh-cookie-cache-')), 'cookie.json');
+const tmpCookieCache = () => join(mkdtempSync(join(tmpdir(), 'dsh-cookie-case-')), 'cookie.json');
 
 registerHooks({
   resolve(specifier, context, nextResolve) {
@@ -70,7 +74,11 @@ test('endpoint-3: 显式 env 覆盖优先', async () => {
 });
 
 test('endpoint-4: 没有日志时回退 8781', async () => {
-  const ep = await resolveDshEndpoint({ env: {}, logPath: '/nonexistent/dsh-web.log' });
+  const ep = await resolveDshEndpoint({
+    env: {},
+    logPath: '/nonexistent/dsh-web.log',
+    cookieCachePath: tmpCookieCache(), // 隔离：不读真实 ~/.cache 的 last-good
+  });
   assert.equal(ep.source, 'legacy-fallback');
   assert.equal(ep.base, 'http://127.0.0.1:8781');
 });
@@ -84,7 +92,7 @@ test('endpoint-5: 日志 token 换 cookie，端口改写为 127.0.0.1', async ()
     calls.push(String(url));
     return new Response('', { status: 302, headers: { 'set-cookie': 'dsh-auth-abc=xyz; Path=/' } });
   };
-  const ep = await resolveDshEndpoint({ env: {}, logPath, fetchImpl });
+  const ep = await resolveDshEndpoint({ env: {}, logPath, fetchImpl, cookieCachePath: tmpCookieCache() });
   assert.equal(ep.base, 'http://127.0.0.1:8799');
   assert.equal(ep.mux, 'ws://127.0.0.1:8799/api/remote.mux');
   assert.equal(ep.cookie, 'dsh-auth-abc=xyz');
@@ -174,8 +182,83 @@ test('endpoint-8: 依次尝试多个日志候选，跳过不存在的', async ()
     env: {},
     logPaths: [join(dir, 'missing.log'), logPath],
     fetchImpl,
+    cookieCachePath: tmpCookieCache(),
   });
   assert.equal(ep.source, 'discovered');
   assert.equal(ep.logPath, logPath);
   assert.equal(ep.base, 'http://127.0.0.1:8799');
+});
+
+test('endpoint-9: token 已失效（401）→ 回落 last-good cookie，探活通过才用', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-cookie-fallback-'));
+  const logPath = join(dir, 'dsh-web.log');
+  const cacheFile = join(dir, 'cookie.json');
+  writeFileSync(logPath, 'dsh web: http://192.168.1.9:8799?token=stale\n');
+  writeFileSync(cacheFile, JSON.stringify({ cookie: 'dsh-auth-good=1', base: 'http://127.0.0.1:8799', at: 1 }));
+  const calls = [];
+  const fetchImpl = async (url, init = {}) => {
+    calls.push({ url: String(url), cookie: init.headers?.cookie });
+    if (String(url).includes('?token=')) return new Response('', { status: 401 });
+    return new Response('', { status: init.headers?.cookie === 'dsh-auth-good=1' ? 200 : 401 });
+  };
+  const ep = await resolveDshEndpoint({ env: {}, logPath, fetchImpl, cookieCachePath: cacheFile });
+  assert.equal(ep.source, 'cookie-cache');
+  assert.equal(ep.cookie, 'dsh-auth-good=1');
+  assert.equal(ep.base, 'http://127.0.0.1:8799');
+  assert.equal(ep.mux, 'ws://127.0.0.1:8799/api/remote.mux');
+  assert.ok(calls.some((c) => c.url.includes('?token=stale')));
+  assert.ok(calls.some((c) => c.url.endsWith('/') && c.cookie === 'dsh-auth-good=1'));
+});
+
+test('endpoint-10: token 失效且 last-good 探活也失败 → discovered-no-cookie', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-cookie-dead-'));
+  const logPath = join(dir, 'dsh-web.log');
+  const cacheFile = join(dir, 'cookie.json');
+  writeFileSync(logPath, 'dsh web: http://192.168.1.9:8799?token=stale\n');
+  writeFileSync(cacheFile, JSON.stringify({ cookie: 'dsh-auth-dead=1', base: 'http://127.0.0.1:8799', at: 1 }));
+  const fetchImpl = async () => new Response('', { status: 401 });
+  const ep = await resolveDshEndpoint({ env: {}, logPath, fetchImpl, cookieCachePath: cacheFile });
+  assert.equal(ep.source, 'discovered-no-cookie');
+  assert.equal(ep.cookie, undefined);
+});
+
+test('endpoint-11: 日志里完全没有 token（open -a 启动）→ 用 last-good cookie 连 8780', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-cookie-notoken-'));
+  const cacheFile = join(dir, 'cookie.json');
+  writeFileSync(cacheFile, JSON.stringify({ cookie: 'dsh-auth-good=1', at: 1 }));
+  const probed = [];
+  const fetchImpl = async (url, init = {}) => {
+    probed.push({ url: String(url), cookie: init.headers?.cookie });
+    return new Response('', { status: init.headers?.cookie === 'dsh-auth-good=1' ? 200 : 401 });
+  };
+  const ep = await resolveDshEndpoint({ env: {}, logPath: join(dir, 'none.log'), fetchImpl, cookieCachePath: cacheFile });
+  assert.equal(ep.source, 'cookie-cache');
+  assert.equal(ep.base, 'http://127.0.0.1:8780');
+  assert.equal(ep.mux, 'ws://127.0.0.1:8780/api/remote.mux');
+  assert.equal(probed[0].cookie, 'dsh-auth-good=1');
+});
+
+test('endpoint-12: 没有 token 且缓存也失效 → 仍然走 legacy 8781', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-cookie-legacy-'));
+  const cacheFile = join(dir, 'cookie.json');
+  writeFileSync(cacheFile, JSON.stringify({ cookie: 'dsh-auth-dead=1', at: 1 }));
+  const fetchImpl = async () => new Response('', { status: 401 });
+  const ep = await resolveDshEndpoint({ env: {}, logPath: join(dir, 'none.log'), fetchImpl, cookieCachePath: cacheFile });
+  assert.equal(ep.source, 'legacy-fallback');
+  assert.equal(ep.base, 'http://127.0.0.1:8781');
+});
+
+test('endpoint-13: 换到新 cookie 后落盘（0600）作为下次 last-good', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-cookie-persist-'));
+  const logPath = join(dir, 'dsh-web.log');
+  const cacheFile = join(dir, 'nested', 'cookie.json');
+  writeFileSync(logPath, 'dsh web: http://192.168.1.9:8799?token=fresh\n');
+  const fetchImpl = async () => new Response('', { status: 303, headers: { 'set-cookie': 'dsh-auth-new=9; Path=/' } });
+  const ep = await resolveDshEndpoint({ env: {}, logPath, fetchImpl, cookieCachePath: cacheFile });
+  assert.equal(ep.source, 'discovered');
+  assert.equal(ep.cookie, 'dsh-auth-new=9');
+  const saved = JSON.parse(readFileSync(cacheFile, 'utf8'));
+  assert.equal(saved.cookie, 'dsh-auth-new=9');
+  assert.equal(saved.base, 'http://127.0.0.1:8799');
+  assert.equal(statSync(cacheFile).mode & 0o777, 0o600);
 });
