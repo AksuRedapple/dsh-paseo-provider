@@ -241,3 +241,20 @@ export async function selectModel(
 export async function renameSession(sessionId: string, title: string): Promise<{ title: string; seq: number }> {
   return rpc('session/rename', { sessionId, title }, 'request', 10_000);
 }
+
+/**
+ * 回一个 Host 侧 forwarded waterfall 事件（TypertGateway 的 `$events/result`）。
+ *
+ * 信封是 `{ args: { clientId, eventId, outcome } }`（裸参数，不带 request/_request 包装）：
+ *  · clientId 必须是**收到该帧的那条 `$events` 流**的 clientId（重连会换）；
+ *  · outcome 三态：`{kind:'result', value}` 认领并给出结果、
+ *    `{kind:'next'}` 交给下一个 answerer、`{kind:'rejected', error:{name,message,code?}}` 报错。
+ * DSH 只接受 owner peer 的回包；cookie 连接满足。
+ */
+export async function respondHostEvent(
+  clientId: string,
+  eventId: string,
+  outcome: Record<string, unknown>,
+): Promise<void> {
+  await rpc('$events/result', { clientId, eventId, outcome }, 'none', 10_000);
+}

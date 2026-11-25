@@ -119,28 +119,49 @@ export async function startMockDsh(onPrompt, opts = {}) {
   const wss = new WebSocketServer({ server });
   let snapshotSent = false;
   let connectionTotal = 0;
+  /** 只数 session/follow 连接：`$events` 是常驻逻辑流，不该影响「每轮是否重建镜像连接」的判据。 */
+  let followTotal = 0;
   /** 每条连接各自的 streamId：send() 要能打到「还活着的那条」（镜像长连时不止一条）。 */
   const live = [];
+  /** `$events` 逻辑流（提问卡用）：与 session/follow 同一条 mux，不同 endpoint。 */
+  const eventStreams = [];
+  const fallbackClientId = opts.eventClientId || 'mock-events-client';
   wss.on('connection', (ws, req) => {
     connectionTotal++;
     if (requiredCookie && req.headers.cookie !== requiredCookie) {
       ws.close(1008, 'unauthorized');
       return;
     }
-    currentWs = ws;
     snapshotSent = false;
-    const conn = { ws, streamId: '' };
+    const conn = { ws, streamId: '', kind: 'follow' };
     live.push(conn);
     ws.on('close', () => {
-      const i = live.indexOf(conn);
-      if (i >= 0) live.splice(i, 1);
+      for (const list of [live, eventStreams]) {
+        const i = list.indexOf(conn);
+        if (i >= 0) list.splice(i, 1);
+      }
     });
     ws.on('message', (raw) => {
       let m;
       try { m = JSON.parse(raw.toString()); } catch { return; }
       if (m.type !== 'open') return;
-      streamId = m.streamId;
       conn.streamId = m.streamId;
+      if (m.endpoint === '$events') {
+        // 只认空 args（与真机同形），首帧给 ready
+        conn.kind = 'events';
+        // 从 session/follow 的候选里摘出去：send() 只该打 follow 流
+        const i = live.indexOf(conn);
+        if (i >= 0) live.splice(i, 1);
+        eventStreams.push(conn);
+        ws.send(JSON.stringify({
+          type: 'item', streamId: m.streamId,
+          value: { type: 'ready', clientId: fallbackClientId, host: { home: '/' } },
+        }));
+        return;
+      }
+      currentWs = ws;
+      streamId = m.streamId;
+      followTotal += 1;
       snapshotSent = true;
       ws.send(JSON.stringify({
         type: 'item', streamId,
@@ -152,8 +173,10 @@ export async function startMockDsh(onPrompt, opts = {}) {
   return {
     port: server.address().port,
     calls,
-    /** 累计 mux 连接数（断言「不再每轮重建连接」用）。 */
-    connections: () => connectionTotal,
+    /** 累计 session/follow 连接数（断言「不再每轮重建连接」用；`$events` 不计）。 */
+    connections: () => followTotal,
+    /** 累计所有 mux 连接数（含 `$events` 常驻流）。 */
+    allConnections: () => connectionTotal,
     /** 观察者测试用：向最近一条就绪的连接推 mux item；没有就绪连接时返回 false。 */
     send(value) {
       const target = live.filter((c) => c.ws.readyState === 1 && c.streamId).at(-1);
@@ -161,6 +184,16 @@ export async function startMockDsh(onPrompt, opts = {}) {
       target.ws.send(JSON.stringify({ type: 'item', streamId: target.streamId, value }));
       return true;
     },
+    /** 向最近一条 `$events` 流推一帧（提问卡测试用）；没有流时返回 false。 */
+    sendEvent(value) {
+      const target = eventStreams.filter((c) => c.ws.readyState === 1 && c.streamId).at(-1);
+      if (!target) return false;
+      target.ws.send(JSON.stringify({ type: 'item', streamId: target.streamId, value }));
+      return true;
+    },
+    /** 已经开了几条 `$events` 流（断言「只开一条、重连才换」用）。 */
+    eventStreamCount: () => eventStreams.length,
+    eventClientId: () => fallbackClientId,
     setCookie(value) { requiredCookie = value; },
     close() {
       for (const c of wss.clients) { try { c.close(); } catch {} }

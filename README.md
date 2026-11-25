@@ -13,7 +13,9 @@
 - **外部回合实时镜像**：会话打开后持续跟随 DSH mux；DSH 桌面版/其他客户端发起的回合会实时出现在 Paseo 时间线（只读）。Paseo 自己发消息时镜像自动让位，steer 时保持跟随。
 - **桌面版原生交互**：图片 prompt（DSH `mediaType`）、运行中 steer 插话（`mode:'steer'`）、`todo/write` → 时间线任务列表。
 - **斜杠命令**：从 DSH `commands/list` 广播命令目录，`/compact`、`/goal`、`/plan`、`/permission` 等走 DSH `commands/execute` 真正执行（不是当文本发给模型）。
-- **外部命令可见**：DSH 桌面版里执行的斜杠命令（`/compact` 等）会镜像成时间线里的一条命令 + 回执。\n- **实时过程**：thinking（reasoning-delta）边到边发；工具调用一开始就显示 running，结果回来再更新为 completed。
+- **提问卡**：DSH 的 `ask_user_question` 在等人工决策时，问题与选项以 Paseo 的提问卡片出现；在 Paseo 里选完直接回写 DSH，不用切回桌面端窗口。
+- **外部命令可见**：DSH 桌面版里执行的斜杠命令（`/compact` 等）会镜像成时间线里的一条命令 + 回执。
+- **实时过程**：thinking（reasoning-delta）边到边发；工具调用一开始就显示 running，结果回来再更新为 completed。
 - **Goal 可见**：DSH 的 `goal/change` 映射为时间线里的任务卡（Paseo 没有独立 goal 卡片，用 todo 项承载）；打开会话时从 projections 恢复当前 goal 和 todos。
 - **上下文与失败可见**：usage 带 token 与上下文窗口占用（回合中每 3s 刷新、压缩与收工即时刷新，走单会话 `session/projections`）；seq 重置、快照截断、未知事件、重连缺口都有 notice，不静默。
 - **历史导入/回放**：列出 DSH 会话、打开并重建时间线；`hasMore` 截断会明确提示。
@@ -45,7 +47,7 @@ paseo plugin logs dsh-provider | grep "no launch token"
 
 - **你只装了 `dsh` CLI、没有桌面版** —— 本插件靠桌面版的 launch token 换取 cookie，没有 CLI/无头模式。请用基于 CLI 或 ACP 的 provider，例如 `geoqiao/deepseek-harness`、`liuxing7954/dsh-paseo`、`dsh-external/dsh-paseo`。
 - **你要在服务器上跑** —— 同上，桌面版起不来就没法用。
-- **你需要权限审批 / MCP / 斜杠命令** —— DSH desktop 的 preset 自动执行工具，且没有对应的 RPC（见「已知限制」）。
+- **你要工具审批 / MCP / revert、archive** —— DSH desktop 的 preset 自动执行工具，且没有对应的 RPC（见「已知限制」）。提问（`ask_user_question`）是例外，已经支持。
 
 插件不安装 DSH、不修改 DSH profile；它只读取本机 DSH web 日志里的 launch token 并在 loopback 换取 cookie。
 
@@ -73,7 +75,8 @@ paseo provider ls          # 应看到 dsh available
 | prompt.command（斜杠命令：`/compact`、`/goal`、`/plan`…）→ DSH `commands/execute` | ✅ |
 | todo/write → `todo` 时间线项 | ✅ |
 | session.usage（tokens + 上下文窗口占用） | ✅ |
-| session.permission | ⚠️ 接收但忽略（DSH preset 自动执行） |
+| `ask_user_question` → `session.permission`（kind=question）+ `$events/result` 回包 | ✅ |
+| 其它 permission（工具审批） | ⚠️ 忽略：DSH 按 preset 执行，没有公开审批 RPC |
 
 | session.revert / archive / unarchive | ❌ 显式 `request.failed(dsh/unsupported)` |
 
@@ -83,6 +86,8 @@ paseo provider ls          # 应看到 dsh available
 
 - `provider.ts` —— Paseo `ProviderConnection` 实现：`send()` 收输入，事件走 `onEvent`；`runTurn()` 驱动一轮。
 - `turn-state.mjs` —— 纯状态机：回声抑制、`turn/end` 权威收工、idle 兜底、6 小时预算。
+- `questions.mjs` —— 提问卡的纯映射：DSH `questions` ↔ Paseo 卡片（header 兜底/去重、回包按 header 反查 id）。
+- `dsh-events.mjs` —— `$events` 订阅：Host forwarded waterfall（`user-questions/request`），断线指数退避重连。
 - `dsh-client.ts` —— HTTP RPC（响应是 brotli 且**没有** `Content-Encoding` 头）。
 - `dsh-follow.mjs` —— 持久 WS mux：snapshot → event / assistant-stream，断线指数退避。
 - `dsh-endpoint.mjs` —— 从 `dsh-web.log` 读 launch token → 换 `dsh-auth` cookie → 连 `127.0.0.1:8780`。
@@ -93,6 +98,7 @@ paseo provider ls          # 应看到 dsh available
 - **模型与上下文**：`session/modelCatalog` 返回按 provider 分组的模型与 reasoning efforts；`session/selectModel` 接受 `{sessionId, provider, model, reasoningEffort?}`；当前模型读 `projections.values.modelSelection`，上下文窗口读 `projections.values.contextPressure.contextWindow`。
 - **brotli 无头**：响应是 brotli 压缩，但**不带 `Content-Encoding`**，必须无条件尝试解压。
 - **mux 帧**：`{"type":"item","streamId","value":{"type":"snapshot"|"event"|"assistant-stream"}}`。
+- **`$events`（提问等 Host waterfall）**：同一条 mux 上 `open` 时 `endpoint:"$events"`、`payload.args` 必须为空对象；首帧 `{type:'ready',clientId,host}`，之后 `{type:'waterfall',event,eventId,agentId,request}`（`agentId` 就是 SessionId）。回包**不走 WS**，走 HTTP `POST /api/$events/result`，`payload.args = {clientId, eventId, outcome}`，`outcome` 三态 `{kind:'result',value}` / `{kind:'next'}` / `{kind:'rejected',error:{name,message,code?}}`。只有 owner peer（cookie 连接）收得到 waterfall、才有答权；`clientId` 每次重连都换。
 - **snapshot**：`cursor` 是最大 seq，`hasMore` 表示历史窗口被截断。
 - **assistant-stream**：`start → chunk(block-start/…/block-end) → end`，`end.outcome` 指向提交的 `assistant/message` seq。
 
@@ -122,7 +128,7 @@ node --test tools/tests/provider_stream.test.mjs
 - 真机只在 macOS + Node 26 验证。Windows/Linux 的日志候选路径已按 Electron `app.getPath('logs')`/`userData` 覆盖并单测，但**没有真机跑过**；发现失败时用 `DSH_WEB_LOG` 或 `DSH_BASE`/`DSH_MUX` 显式指定。
 - DSH 是私有协议；rc 升级可能改变日志/字段，未知事件会告警而不是猜测。
 - 快照窗口由 DSH 控制，超长历史会截断（只记日志，不弹 notice，不分页）。
-- 权限审批、MCP、斜杠命令、revert/archive 未做（DSH desktop preset 自动执行 / 无对应端点）。
+- 工具审批、MCP、revert/archive 未做（DSH desktop preset 自动执行 / 无对应端点）。提问卡已支持；注意 DSH 会把待答问题广播给所有已连接客户端，桌面端与 Paseo 都会显示，谁先答谁赢，另一方在工具结果回来后自动收起。
 - 目标 DSH 会话正在运行（桌面版/其他客户端）时，默认把消息 **steer 插入当前轮次**；外部轮次可能很长，steer 的预算是 6 小时（`DSH_STEER_BUDGET_MS`），且不会用 idle 兜底提前收工。设置 `DSH_RUNNING_MODE=fail` 可改为快速失败（`dsh/busy`）。
 - goal 轮次可以跑几十分钟；普通轮次的总预算为 6 小时，idle 兜底只在没有挂起工具时生效（防止长工具被误判为本轮结束）。
 - DSH 自动改标题（`session/title` 事件）不会实时同步到 Paseo（Paseo 契约没有标题更新事件）；重新打开时以 DSH 标题为准。

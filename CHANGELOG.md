@@ -1,5 +1,17 @@
 # Changelog
 
+## 2.12.0 — 2026-11-25
+
+**提问卡：DSH 的 `ask_user_question` 可以在 Paseo 里就地作答了**（之前只能回 DSH 桌面端点）。
+
+- 现象：DSH 提问时 Paseo 只显示一张挣扎的 generic 工具卡（🔧 Ask user question），没有选项也没有按钮；因为 provider 既没声明 `permission` 能力，也从没发过 `session.permission`。
+- 改法：新增 `$events` 订阅（`server/dsh-events.mjs`）——DSH 的提问是 Host 侧 waterfall 事件 `user-questions/request`，只有 owner peer（cookie 连接）收得到。收到即发 `session.permission`（`kind:'question'`，questions 带 options/multiSelect/allowOther），人在 Paseo 选完走 `POST /api/$events/result` 回包（`{clientId,eventId,outcome}`），DSH 的工具调用当场解挂。
+- 两侧形状映射在 `server/questions.mjs`（纯函数）：Paseo 要求 `header` 非空且唯一（DSH 可选）→ 兜底 `Q<n>` 并去重；回包 Paseo 以 `header` 为键、DSH 按 `id` 对位 → 逐题反查；多选 `", "` 拼接拆回标签，混入的自由文本进 `custom`。
+- 收尾两条线：本地作答 → 直接补 `session.permission_resolved`；DSH 桌面端抢先作答/超时 → 我们从 `tool/result`（legacy 提问没有 `wait.callId`，所以按「本会话的 `ask_user_question` 返回了」认）补发同一事件，卡片不会悬着。`session.close` / 连接关闭时一并清理。
+- 已知取舍：`$events` 是广播给所有 owner peer，DSH 桌面端与 Paseo 都会收到同一张卡，谁先答谁赢（DSH 自身语义）。
+- 长连接子模块对宿主进程友好：重连定时器与 socket 都 `unref`，不会把 `node --test` 或宿主钉住。
+- Tests: 12 files / 所有用例绿（新增 `questions` 9 例 + `provider_questions` 4 例；`mock-dsh` 支持 `$events` 逻辑流，`connections()` 只数 follow 连接）。
+
 ## 2.11.0 — 2026-11-20
 
 **launch token 换不到 cookie 时回落 last-good cookie**（修「Paseo 模型列表显示不可用」的真实事故）：

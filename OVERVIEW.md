@@ -23,6 +23,7 @@ DSH's desktop app exposes a local HTTP RPC endpoint and a WebSocket mux. The plu
 - Interrupt a running turn, close a session, and report whether a runtime can be stopped.
 - Model catalog from DSH, including model and reasoning-effort selection for existing sessions.
 - Image prompts and steering a running turn.
+- Answer the agent's question without leaving Paseo: when DSH's `ask_user_question` is waiting, the plugin shows its questions and options as a Paseo question card and posts the selected answer back to DSH.
 - Show the DSH goal as a persistent task card (Paseo has no dedicated goal item) and restore goals/todos from projections when opening a session.
 - Report snapshot truncation, reconnects and unknown events as visible notices.
 
@@ -32,7 +33,7 @@ The plugin reads the local DSH web log to obtain a launch token, then exchanges 
 
 ## Permissions
 
-The plugin runs unsandboxed with the permissions of the user running the Paseo daemon, like other Paseo plugins. It does not add a tool-approval layer: DSH executes tools according to its own configuration preset. It does not modify files outside the DSH endpoints it calls.
+The plugin runs unsandboxed with the permissions of the user running the Paseo daemon, like other Paseo plugins. It does not add a tool-approval layer: DSH executes tools according to its own configuration preset. Questions are the exception in presentation only: when an agent calls `ask_user_question`, the plugin forwards DSH's pending `user-questions/request` to Paseo as a `session.permission` event of kind `question`, so the human can answer without switching to the DSH window, and posts the chosen answer back to the same DSH endpoint that asked. The plugin itself never decides; it does not modify files outside the DSH endpoints it calls.
 
 ## Limitations
 
@@ -40,7 +41,8 @@ The plugin runs unsandboxed with the permissions of the user running the Paseo d
 - Verified on macOS with DSH 0.2.1-rc.x and Paseo 0.14/0.15. The Windows/Linux log candidates are covered by unit tests but have not been run on real hardware; `DSH_WEB_LOG` (or `DSH_BASE`/`DSH_MUX`) overrides discovery on any platform.
 - DSH is a private protocol; unknown events are reported as notices, but a DSH release can still change behavior.
 - Very long histories are truncated by DSH (reported as a notice; no pagination).
-- Permission prompts, MCP servers, session revert and archive are not supported (DSH exposes no endpoints for them; its presets execute tools automatically).
+- Tool approvals, MCP servers, session revert and archive are not supported (DSH exposes no endpoints for them; its presets execute tools automatically). Questions are the exception and are supported as described above.
+- A waiting question is broadcast by DSH to every attached client, so the DSH window and Paseo both show it; whichever answers first settles it, and the other client stops showing it once the tool result arrives.
 - Prompting a DSH session that is already running in another client steers into the current turn by default; set `DSH_RUNNING_MODE=fail` to reject with a visible busy error instead.
 - Title changes made by DSH after a turn are not pushed live (the Paseo provider contract has no title update event); reopening uses the DSH title.
 - Goals are rendered as a task card because the Paseo timeline has no dedicated goal item.

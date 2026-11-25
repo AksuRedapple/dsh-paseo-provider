@@ -7,9 +7,11 @@
  *  · send() 只报"收到"，结果一律走 onEvent 推**完整快照**
  *  · ProviderSessionSummary = { persistence:{version,data}, cwd, title?, description?, updatedAt?(ISO) }
  */
-import { listSessions, promptSession, createSession, interruptSession, probeDsh, modelCatalog, selectModel, renameSession, listCommands, executeCommand, sessionProjections } from './dsh-client';
+import { listSessions, promptSession, createSession, interruptSession, probeDsh, modelCatalog, selectModel, renameSession, listCommands, executeCommand, sessionProjections, respondHostEvent } from './dsh-client';
 import type { DshModelCatalog, DshPromptBlock } from './dsh-client';
 import { fetchSessionRecords, fetchSessionSnapshot, followSession, type DshEvent } from './dsh-ws';
+import { subscribeHostEvents } from './dsh-events.mjs';
+import { ASK_USER_QUESTION_TOOL, mapQuestions, questionPermission, toDshOutcome } from './questions.mjs';
 import { getDshEndpoint } from './dsh-endpoint.mjs';
 import { createTurnState } from './turn-state.mjs';
 import { logDebug, logInfo, logWarn, logError } from './log';
@@ -28,8 +30,10 @@ const defaultCwd = () => process.env.DSH_DEFAULT_CWD || process.env.HOME || proc
 const normText = (s: unknown) => String(s ?? '').replace(/\s+/g, '');
 let statusCache: { at: number; value: { available: boolean; diagnostic?: string } } | null = null;
 
-/** 与 Paseo 协商的能力（muse/antigravity 等官方 provider 的同款基线，去掉 DSH 没有的
- *  permission / prompt.command：DSH 用 preset 自动执行，且没有命令注册 RPC）。 */
+/** 与 Paseo 协商的能力（muse/antigravity 等官方 provider 的同款基线）。
+ *  `permission` 是为了提问卡：DSH 的 `ask_user_question` 会挂起等人工决策，
+ *  必须通过 `session.permission`（kind='question'）把卡片送到 Paseo，人才能就地选。
+ *  `prompt.command` 虽然声明了，但 DSH 的命令集由 commands/list 动态给出。 */
 const CAPABILITIES = [
   'session.list',
   'session.persistence',
@@ -37,6 +41,7 @@ const CAPABILITIES = [
   'prompt.image',
   'prompt.steer',
   'prompt.command',
+  'permission',
   'session.configure',
 ] as const;
 
@@ -107,6 +112,74 @@ export function createProvider() {
       // 每个 provider 连接独立：观察者 / 外部正在跑的回合（steer 复用 turnId）
       const observerState: ObserverState = { observers: new Map(), observedTurns: new Map() };
       const emit: Emit = (e) => listeners.forEach((l) => l(e));
+
+      // ---- 提问卡：DSH `$events` 的 `user-questions/request` → Paseo `session.permission` ----
+      // 仅当 Paseo 真的开了一个会话时才连（否则白连一条 WS，且没人接卡）。
+      let hostEvents: ReturnType<typeof subscribeHostEvents> | null = null;
+
+      const sessionForDsh = (dshId: string): string | undefined => {
+        for (const [paseoId, d] of openSessions) if (d === dshId) return paseoId;
+        return undefined;
+      };
+
+      /** 一条 waterfall 帧：认领成 Paseo 的提问卡。没人开这个会话就不认领（不回包，交给别的客户端）。 */
+      const onHostEvent = (frame: { clientId: string; event: string; eventId: string; agentId: string; request: any }) => {
+        if (frame.event !== 'user-questions/request') return; // 其它 forwarded 事件暂不消费
+        const questions = Array.isArray(frame.request?.questions) ? frame.request.questions : [];
+        if (!questions.length) return;
+        const paseoId = sessionForDsh(frame.agentId);
+        if (!paseoId) {
+          logDebug('host question for session not open in paseo', { dsh: frame.agentId });
+          return;
+        }
+        const callId = str(frame.request?.wait?.callId);
+        const permissionId = callId || frame.eventId;
+        const mapped = mapQuestions(questions);
+        liveQuestions.set(permissionId, {
+          sessionId: paseoId, callId, clientId: frame.clientId, eventId: frame.eventId, mapped,
+        });
+        logInfo('question asked', { session: paseoId, dsh: frame.agentId, questions: mapped.length, callId: callId ?? null });
+        emit({
+          type: 'session.permission',
+          sessionId: paseoId,
+          request: questionPermission({ permissionId, eventId: frame.eventId, questions }),
+        });
+      };
+
+      const ensureHostEvents = () => {
+        if (hostEvents) return hostEvents;
+        hostEvents = subscribeHostEvents({
+          onFrame: onHostEvent,
+          onReady: ({ clientId }) => logDebug('host events ready', { clientId }),
+          resolveEndpoint: endpointResolver,
+        });
+        void hostEvents.ready.catch(() => logWarn('host events not ready', {}));
+        return hostEvents;
+      };
+
+      /** 人答完了 → 回 `$events/result`。
+       *  allow → {kind:'result', value:{answers}}；弹掉 → rejected（带 ASK_CANCELLED，DSH 那边会报成工具失败）。 */
+      const answerQuestion = async (permissionId: string, response: any) => {
+        const q = liveQuestions.get(permissionId);
+        if (!q) {
+          logDebug('permission response for unknown question', { permission: permissionId });
+          return;
+        }
+        liveQuestions.delete(permissionId);
+        const outcome = toDshOutcome(q.mapped, response);
+        try {
+          await respondHostEvent(q.clientId, q.eventId, outcome as any);
+          logInfo('question answered', {
+            session: q.sessionId,
+            outcome: (outcome as any).kind,
+            answers: (outcome as any).value?.answers?.length ?? 0,
+          });
+        } catch (e) {
+          // 流已断/已被别的客户端抢先答：不把失败当成用户操作失败，只清卡
+          logWarn('question answer failed', { session: q.sessionId, error: errorMessage(e) });
+        }
+        emit({ type: 'session.permission_resolved', sessionId: q.sessionId, permissionId });
+      };
 
       const dshCommandNames = async (sid: string, dshId: string): Promise<Set<string>> => {
         const cached = commandNames.get(sid);
@@ -233,6 +306,8 @@ export function createProvider() {
                   logInfo('created dsh session', { dsh: dshId });
                 }
                 openSessions.set(sid, dshId);
+                // 从这个会话起开始收 Host forwarded events（提问卡的前提）
+                ensureHostEvents();
 
                 // 标题：已有会话用 DSH 的标题；新会话把 Paseo 的 config.title 回写到 DSH。
                 const info = await sessionInfo(dshId, { withRunning: true });
@@ -368,8 +443,8 @@ export function createProvider() {
                   for (const ev of events) {
                     if (ev.type === 'todo/write') sawTodo = true;
                     if (ev.type === 'turn/start') openTurn = Number(ev.data?.turn) || 0;
-                    else if (ev.type === 'turn/end') openTurn = null;
-                    for (const item of toTimeline(ev, pending)) {
+                    if (ev.type === 'turn/end') openTurn = null;
+                    for (const item of toTimeline(ev, pending, (callId, name) => settleQuestionsForTool(emit, sid, callId, name))) {
                       emit({
                         type: 'timeline.item',
                         sessionId: sid,
@@ -799,14 +874,17 @@ export function createProvider() {
                 sessionModels.delete(input.sessionId);
                 lastUsageBySession.delete(input.sessionId);
                 commandNames.delete(input.sessionId);
+                settleQuestionsForSession(emit, input.sessionId);
                 emit({ type: 'session.closed', sessionId: input.sessionId });
                 logInfo('session.closed', { session: input.sessionId });
                 break;
               }
 
-              case 'session.permission':
-                logDebug('permission response ignored', { permission: input.permissionId });
-                return;
+              case 'session.permission': {
+                // DSH 的提问等待是 Host 侧 waterfall：不回答就一直挂着，所以必须回包。
+                await answerQuestion(String(input.permissionId), input.response);
+                break;
+              }
 
               default: {
                 const message = `unsupported input: ${input?.type}`;
@@ -849,6 +927,9 @@ export function createProvider() {
 
         async close() {
           listeners.length = 0;
+          try { hostEvents?.close(); } catch {}
+          hostEvents = null;
+          liveQuestions.clear();
           for (const id of [...observerState.observers.keys()]) stopObserver(observerState, id);
           observerState.observedTurns.clear();
         },
@@ -1020,8 +1101,9 @@ function hasAssistantText(ev: DshEvent): boolean {
 }
 
 /** DSH 事件 → Paseo 时间线项。
- * tool/call 先挂起，等 tool/result 到达再合成一条（带输出与状态），避免出现"永远 running"。 */
-function toTimeline(ev: DshEvent, pending: Map<string, any>): any[] {
+ * tool/call 先挂起，等 tool/result 到达再合成一条（带输出与状态），避免出现"永远 running"。
+ * `onToolResult` 是可选的副效应钩子：工具结算时顺便收尾挂起的提问卡。 */
+function toTimeline(ev: DshEvent, pending: Map<string, any>, onToolResult?: (callId: string, toolName: string) => void): any[] {
   const d = ev?.data || {};
   const out: any[] = [];
   const texts = (content: any[], keep: string[]) =>
@@ -1059,6 +1141,7 @@ function toTimeline(ev: DshEvent, pending: Map<string, any>): any[] {
   } else if (ev.type === 'tool/result') {
     const callId = String(d.toolCallId || d?.message?.source?.callId || '');
     const p = pending.get(callId);
+    if (callId) onToolResult?.(callId, String(p?.d?.name || ''));
     if (p) {
       pending.delete(callId);
       out.push({ type: 'tool_call', id: `t-${p.seq}`, callId,
@@ -1121,6 +1204,47 @@ function settleToolFailure(callId: string, p: any, paseoId: string, emit: Emit, 
       error: { message },
     },
   });
+}
+
+/** 挂在 Paseo 上、还等着人回答的提问卡。
+ *  key = Paseo 的 permissionId（有时间隔用 DSH 的 callId，否则用 $events 的 eventId）。 */
+const liveQuestions = new Map<string, {
+  sessionId: string;
+  /** DSH 提问工具调用的 callId（legacy 阻塞式提问没有 `wait`，所以可能为空）。 */
+  callId?: string;
+  /** 收到该帧的 `$events` 流 clientId —— 回包必须回给它（重连会变）。 */
+  clientId: string;
+  eventId: string;
+  /** mapQuestions 的产物（回包时按 header 反查 id 用）。 */
+  mapped: any[];
+}>();
+
+function settleQuestion(emit: Emit, permissionId: string) {
+  const q = liveQuestions.get(permissionId);
+  if (!q) return;
+  liveQuestions.delete(permissionId);
+  logDebug('question settled', { session: q.sessionId, permission: permissionId });
+  emit({ type: 'session.permission_resolved', sessionId: q.sessionId, permissionId });
+}
+
+/**
+ * 工具调用结算 → 对应提问卡也该收尾。
+ * 两种来源都要管：自己在 Paseo 答的、以及 DSH 桌面端先答/超时被拒的（后者 Paseo 收不到通知）。
+ * legacy 阻塞式提问在请求里没有 callId，所以「本会话的 ask_user_question 工具返回了」
+ * 就是最可靠的收尾信号。
+ */
+function settleQuestionsForTool(emit: Emit, sessionId: string, callId: string, toolName: string) {
+  for (const [id, q] of [...liveQuestions]) {
+    if (q.sessionId !== sessionId) continue;
+    if (q.callId ? q.callId === callId : toolName === ASK_USER_QUESTION_TOOL) settleQuestion(emit, id);
+  }
+}
+
+/** 会话关掉/换绑时，把它的提问卡全部收尾（否则 Paseo 上会挂着永远点不完的卡）。 */
+function settleQuestionsForSession(emit: Emit, sessionId: string) {
+  for (const [id, q] of [...liveQuestions]) {
+    if (q.sessionId === sessionId) settleQuestion(emit, id);
+  }
 }
 
 type ObserverState = {
@@ -1288,7 +1412,7 @@ function startObserver(
       // 自有回合进行中：连接保留（游标照常前进，恢复后不会回放），输出交给 runTurn
       if (paused) continue;
       const key = `${(ev.data as any)?.turn}:${(ev.data as any)?.step}`;
-      const items = toTimeline(ev, pending);
+      const items = toTimeline(ev, pending, (callId, name) => settleQuestionsForTool(emit, paseoId, callId, name));
       if (!items.length) continue;
       preview.flush();
       for (const item of items) {
@@ -1432,9 +1556,12 @@ export async function runTurn(
   }
   // 鉴权断了要一句话说清（2026-11-10 真机：DSH 被 open -a 启动 → 不写新 token →
   // 换不到 cookie → 所有 RPC 401 → follow 拿不到快照 → 用户只看到 first snapshot timeout）
+  // 2026-11-20：换不到 cookie 时会先回落 ~/.cache/dsh-provider-cookie.json 的 last-good
+  // cookie；走到这里说明连它也没有/探活失败，只能靠重启 DSH 拿新 token。
   if (!deps.follow && ep && !ep.cookie && ep.source === 'discovered-no-cookie') {
     throw new Error(
-      'DSH 鉴权失效：launch token 换不到 cookie（多半是 DSH 用 open -a/直接双击启动的，没写新的 dsh web token）。'
+      'DSH 鉴权失效：launch token 换不到 cookie，且没有可用的 last-good cookie'
+      + '（多半是 DSH 用 open -a/直接双击启动的，没写新的 dsh web token）。'
       + '用 launchd 重启 DSH（launchctl kickstart -k gui/$(id -u)/'
       + (process.env.DSH_LAUNCHD_LABEL || '<DSH 的 launchd label>')
       + '），再 paseo plugin reload dsh-provider',
@@ -1501,7 +1628,7 @@ export async function runTurn(
         preview.flush();
         const ev = a.event as DshEvent;
         const key = `${(ev.data as any)?.turn}:${(ev.data as any)?.step}`;
-        for (const item of toTimeline(ev, pending)) {
+        for (const item of toTimeline(ev, pending, (callId, name) => settleQuestionsForTool(emit, paseoId, callId, name))) {
           // 该 step 已有流式预览 → 最终件一律不再发，避免重复。
           if (item.type === 'assistant_message' && preview.hasText(key)) {
             if (normText(item.text) !== normText(preview.textOf(key))) {
@@ -1691,7 +1818,7 @@ export async function streamNewEvents(
         // 2026-11-03 真机抓到：只看 assistant/message 会在工具调用后误收工。
         if (ev.type === 'assistant/message' && hasAssistantText(ev)) sawReplyText = true;
         if (ev.type === 'turn/end') sawTurnEnd = true;
-        for (const item of toTimeline(ev, pending)) {
+        for (const item of toTimeline(ev, pending, (callId, name) => settleQuestionsForTool(emit, paseoId, callId, name))) {
           emit({
             type: 'timeline.item',
             sessionId: paseoId,
