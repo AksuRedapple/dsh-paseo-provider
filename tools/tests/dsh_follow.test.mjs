@@ -85,6 +85,12 @@ test('follow reconnect: resolveEndpoint 抛错时沿用旧端点继续重试', a
   const alive = await startMux(() => {});
   t.after(() => alive.close());
 
+  // dsh-follow 的退避定时器是 unref 的（生产环境里不该钉住宿主进程）。
+  // 这个用例正等着下一个 error 消息，server 关了之后就只剩那个 unref 定时器，
+  // 事件循环会直接抽干 → Node 22 上被 test runner 判成 cancelledByParent。
+  const keepAlive = setInterval(() => {}, 50);
+  t.after(() => clearInterval(keepAlive));
+
   let attempts = 0;
   const follow = followSession('session-test-2', {
     url: `ws://127.0.0.1:${alive.port}`,

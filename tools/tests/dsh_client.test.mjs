@@ -1,6 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { rpc, probeDsh } from '../../server/dsh-client.ts';
+import { clearDshEndpointCache } from '../../server/dsh-endpoint.mjs';
+
+// 端点必须来自 env：否则 getDshEndpoint 会去扫本机日志，CI（无 DSH）直接走
+// `legacy-fallback` 分支返回 unavailable，probeDsh 的 200 用例永远失败。
+// 2026-11-25：CI（Linux，Node 22/24）一直红在这条上。
+process.env.DSH_BASE = 'http://127.0.0.1:9';
+process.env.DSH_MUX = 'ws://127.0.0.1:9';
+process.env.DSH_COOKIE = 'dsh-auth-test';
+clearDshEndpointCache();
 
 const realFetch = globalThis.fetch;
 

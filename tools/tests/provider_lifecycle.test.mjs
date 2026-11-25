@@ -448,7 +448,12 @@ test('lifecycle: 上下文占用随回合与 /compact 更新', async (t) => {
   });
   await waitFor(events, (e) => e.type === 'session.prompt_result' && e.clientMessageId === 'm1');
 
-  const first = events.filter((e) => e.type === 'session.usage').at(-1);
+  // 回合中的 usage 是 fire-and-forget 发出的（turn end 后异步取 projections），
+  // 可能晚于 prompt_result 到达 —— 直接取会随机落空（CI 上抓到的抖动就是这个）。
+  const first = await waitFor(
+    events,
+    (e) => e.type === 'session.usage' && e.usage?.contextWindowUsedTokens === 1000,
+  ).catch(() => events.filter((e) => e.type === 'session.usage').at(-1));
   assert.ok(first, '回合期间必须发出 session.usage');
   assert.equal(first.usage.contextWindowUsedTokens, 1000);
   assert.equal(first.usage.contextWindowMaxTokens, 10000);
@@ -460,7 +465,10 @@ test('lifecycle: 上下文占用随回合与 /compact 更新', async (t) => {
   });
   await waitFor(events, (e) => e.type === 'session.prompt_result' && e.clientMessageId === 'm2');
 
-  const after = events.filter((e) => e.type === 'session.usage').at(-1);
+  const after = await waitFor(
+    events,
+    (e) => e.type === 'session.usage' && e.usage?.contextWindowUsedTokens === 500,
+  ).catch(() => events.filter((e) => e.type === 'session.usage').at(-1));
   assert.equal(after.usage.contextWindowUsedTokens, 500, '/compact 之后占用要立刻掉一半');
   assert.equal(mock.calls.filter((c) => c.method === 'session/projections').length >= 2, true,
     '应通过单会话 projections 取值，而不是每次 listSessions');

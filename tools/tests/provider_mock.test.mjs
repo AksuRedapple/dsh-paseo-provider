@@ -61,8 +61,17 @@ test('provider-mock: WS prompt emits tool, text, usage, completion', async (t) =
   assert.ok(tool, 'completed tool card expected');
   assert.equal(tool.status, 'completed');
 
-  // 上下文字段与 step tokens 是合并进同一份 lastUsage 的（后发不会清掉先发），取最后一条
-  const usage = events.filter((e) => e.type === 'session.usage').at(-1);
+  // 上下文字段与 step tokens 是合并进同一份 lastUsage 的（后发不会清掉先发），取最后一条。
+  // 上下文那份是 turn end 后异步取 projections 发的，可能晚于 prompt_result —— 等它到。
+  const usage = await (async () => {
+    const deadline = Date.now() + 5000;
+    while (Date.now() < deadline) {
+      const last = events.filter((e) => e.type === 'session.usage').at(-1);
+      if (last?.usage?.contextWindowMaxTokens) return last;
+      await new Promise((r) => setTimeout(r, 20));
+    }
+    return events.filter((e) => e.type === 'session.usage').at(-1);
+  })();
   assert.ok(usage, 'session.usage expected');
   assert.equal(usage.usage.inputTokens, 3);
   assert.equal(usage.usage.outputTokens, 2);
