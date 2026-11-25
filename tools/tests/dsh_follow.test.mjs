@@ -104,11 +104,22 @@ test('follow reconnect: resolveEndpoint 抛错时沿用旧端点继续重试', a
   await follow.ready;
   alive.close();
 
-  const deadline = Date.now() + 2000;
+  const deadline = Date.now() + 3000;
   let errors = 0;
-  for await (const msg of follow) {
+  // 不能写成 `for await (...) { if (Date.now() > deadline) break }`：
+  // 没消息时 for-await 会一直阻塞，截止时间根本不会被求值 →
+  // Linux + Node 22 上没有任何 error 消息就永远挂着（CI rc=124）。
+  const it = follow[Symbol.asyncIterator]();
+  while (Date.now() < deadline) {
+    const remaining = Math.max(0, deadline - Date.now());
+    const next = await Promise.race([
+      it.next(),
+      new Promise((resolve) => { setTimeout(() => resolve(null), remaining); }),
+    ]);
+    if (!next || next.done) break;
+    const msg = next.value;
     if (msg.kind === 'error' && msg.reconnecting) errors++;
-    if (errors >= 2 || Date.now() > deadline) break;
+    if (errors >= 2) break;
   }
   assert.ok(attempts >= 1, '必须尝试过重新解析');
   assert.ok(errors >= 1, '解析失败也要继续走重连');
